@@ -283,13 +283,21 @@ app.get('/api/planes/live', async (req, res) => {
         return res.json(planesCache[country].data);
     }
 
+    // ================================================================
+    // ADSB.LOL API (replaces OpenSky — no IP blocking, no API key)
+    // ================================================================
     const [lamin, lamax, lomin, lomax] = bounds;
-    const url = `https://opensky-network.org/api/states/all?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
+    const centerLat = (lamin + lamax) / 2;
+    const centerLon = (lomin + lomax) / 2;
+    // Convert degrees to nautical miles (1 degree ≈ 60 NM)
+    const radiusNM = Math.min(250, Math.max(100, (lamax - lamin) * 60));
+
+    const url = `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`;
 
     try {
         const fetch = (await import('node-fetch')).default;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
 
         let response;
         try {
@@ -304,28 +312,30 @@ app.get('/api/planes/live', async (req, res) => {
         if (!response.ok) {
             if (planesCache[country]) return res.json(planesCache[country].data);
             return res.status(502).json({
-                error: 'OpenSky API error',
+                error: 'adsb.lol API error',
                 status: response.status,
-                hint: response.status === 429 ? 'Rate limit reached. Wait and try again.' : 'Try again soon.'
+                hint: 'Try again soon.'
             });
         }
 
         const data = await response.json();
-        const planes = (data.states || [])
-            .filter(s => s[5] != null && s[6] != null)
-            .map(s => ({
-                icao24: s[0],
-                callsign: (s[1] || '').trim() || 'Unknown',
-                origin_country: s[2],
-                longitude: s[5],
-                latitude: s[6],
-                altitude: s[7] ? Math.round(s[7]) : 0,
-                on_ground: s[8],
-                velocity: s[9] ? Math.round(s[9] * 3.6) : 0,
-                heading: s[10] ? Math.round(s[10]) : 0,
-                vertical_rate: s[11] ? Math.round(s[11]) : 0,
-                geo_altitude: s[13] ? Math.round(s[13]) : 0,
-                squawk: s[14]
+
+        // Map adsb.lol fields to the format your frontend expects
+        const planes = (data.ac || [])
+            .filter(a => a.lat != null && a.lon != null)
+            .map(a => ({
+                icao24: a.hex || 'unknown',
+                callsign: (a.flight || '').trim() || a.r || 'Unknown',
+                origin_country: 'Unknown', // adsb.lol doesn't provide this
+                longitude: a.lon,
+                latitude: a.lat,
+                altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
+                on_ground: a.ground || false,
+                velocity: a.gs ? Math.round(a.gs * 1.852) : 0, // knots to km/h
+                heading: a.track ? Math.round(a.track) : 0,
+                vertical_rate: a.baro_rate || 0,
+                geo_altitude: a.alt_geom ? Math.round(a.alt_geom) : 0,
+                squawk: a.squawk || null
             }));
 
         planesCache[country] = { data: planes, timestamp: now };
@@ -333,7 +343,7 @@ app.get('/api/planes/live', async (req, res) => {
     } catch (err) {
         if (planesCache[country]) return res.json(planesCache[country].data);
         res.status(502).json({
-            error: err.name === 'AbortError' ? 'OpenSky API timeout' : 'Flight data unavailable',
+            error: err.name === 'AbortError' ? 'adsb.lol API timeout' : 'Flight data unavailable',
             hint: 'Try again in a moment.'
         });
     }
@@ -458,7 +468,6 @@ app.get('/api/countries/:code', (req, res) => {
    - For real keep-alive, use UptimeRobot / cron-job.org on /api/health.
    ------------------------------------------------------------------ */
 function startSelfPing() {
-    // Prefer Render's auto-provided URL. Fall back to a manual env var.
     const baseUrl =
         process.env.RENDER_EXTERNAL_URL ||
         process.env.SELF_URL ||
@@ -470,20 +479,18 @@ function startSelfPing() {
     }
 
     const healthUrl = `${baseUrl.replace(/\/$/, '')}/api/health`;
-    const INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+    const INTERVAL_MS = 10 * 60 * 1000;
 
     const ping = () => {
         https.get(healthUrl, (res) => {
             console.log(`[keep-alive] ping ${healthUrl} → ${res.statusCode}`);
-            res.resume(); // drain response
+            res.resume();
         }).on('error', (err) => {
             console.warn('[keep-alive] ping failed:', err.message);
         });
     };
 
-    // First ping after 30s (give the server time to boot)
     setTimeout(ping, 30 * 1000);
-    // Then every 10 minutes
     setInterval(ping, INTERVAL_MS);
 
     console.log(`[keep-alive] self-ping enabled for ${healthUrl} every 10 min`);
