@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkyScope · Explore Global Airspace</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <div class="auth-page">
+
+    
+    <div class="auth-visual">
+      <div class="auth-visual-content">
+        <span class="auth-logo">✈️</span>
+        <h1>SkyScope</h1>
+        <p class="tagline">EXPLORE GLOBAL AIRSPACE</p>
+        <ul class="auth-features">
+          <li>Live aircraft tracking worldwide</li>
+          <li>86,000+ airports in your pocket</li>
+          <li>Real-time country insights</li>
+          <li>Latest aviation news</li>
+        </ul>
+      </div>
+    </div>
+
+    
+    <div class="auth-form-side">
+      <div class="auth-card">
+
+        <h2>Welcome back</h2>
+        <p class="subtitle">Sign in to continue exploring</p>
+
+        
+        <div class="auth-tabs">
+          <button id="tabLogin" class="auth-tab active" type="button">Login</button>
+          <button id="tabRegister" class="auth-tab" type="button">Register</button>
+        </div>
+
+        
+        <form id="loginForm">
+          <div class="form-group">
+            <label for="loginEmail">Email</label>
+            <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Password</label>
+            <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" />
+          </div>
+          <button type="submit" class="btn-primary">Sign In</button>
+          <div id="loginMsg" class="auth-message"></div>
+        </form>
+
+        
+        <form id="registerForm" class="hidden">
+          <div class="form-group">
+            <label for="regName">Full Name</label>
+            <input type="text" id="regName" placeholder="Your name" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label for="regEmail">Email</label>
+            <input type="email" id="regEmail" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="regPassword">Password</label>
+            <input type="password" id="regPassword" placeholder="Min 4 characters" autocomplete="new-password" />
+          </div>
+          <button type="submit" class="btn-primary">Create Account</button>
+          <div id="regMsg" class="auth-message"></div>
+        </form>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script src="js/auth.js"></script>
+</body>
+</html>
