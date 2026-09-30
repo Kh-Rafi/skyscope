@@ -768,31 +768,56 @@ app.get('/api/planes/countries', (req, res) => {
 /* ------------------------------------------------------------------
    Directions proxy — hides ORS API key from the frontend
    Uses the official OpenRouteService API (api.openrouteservice.org)
+   Snaps input coordinates to nearest road before routing.
    ------------------------------------------------------------------ */
 const ORS_API_KEY = process.env.ORS_API_KEY;
 
-let directionsQuery = {};
+// --- Snap a coordinate to the nearest road using ORS /snap ---
+async function snapToRoad(lat, lon) {
+    const fetch = (await import('node-fetch')).default;
+    const url = `https://api.openrouteservice.org/v2/snap/driving-car?lat=${lat}&lon=${lon}`;
 
-async function tryDirectionsEndpoint(baseUrl, authHeader) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        const res = await fetch(url, {
+            headers: { 'Authorization': ORS_API_KEY },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return null;
+
+        const data = await res.json();
+        // ORS returns { locations: [[lon, lat], ...] }
+        if (data.locations && data.locations[0]) {
+            return { lon: data.locations[0][0], lat: data.locations[0][1] };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// --- Core routing call ---
+async function tryDirectionsEndpoint(fromLon, fromLat, toLon, toLat) {
     const fetch = (await import('node-fetch')).default;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
         const response = await fetch(
-            `${baseUrl}/v2/directions/driving-car/geojson`,
+            'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
             {
                 method: 'POST',
                 headers: {
-                    'Authorization': authHeader,
+                    'Authorization': ORS_API_KEY,
                     'Content-Type': 'application/json',
                     'Accept': 'application/json, application/geo+json'
                 },
                 body: JSON.stringify({
-                    coordinates: [
-                        [directionsQuery.fromLon, directionsQuery.fromLat],
-                        [directionsQuery.toLon, directionsQuery.toLat]
-                    ]
+                    coordinates: [[fromLon, fromLat], [toLon, toLat]]
                 }),
                 signal: controller.signal
             }
@@ -830,51 +855,76 @@ app.get('/api/directions', async (req, res) => {
         });
     }
 
-    directionsQuery = { fromLat, fromLon, toLat, toLon };
+    try {
+        // ---- 1. Snap BOTH endpoints to nearest road ----
+        console.log(`[directions] snapping from (${fromLat}, ${fromLon})`);
+        const snappedFrom = await snapToRoad(fromLat, fromLon);
 
-    // OpenRouteService uses the plain API key in the Authorization header.
-    const attempts = [
-        { url: 'https://api.openrouteservice.org', auth: ORS_API_KEY }
-    ];
+        console.log(`[directions] snapping to   (${toLat}, ${toLon})`);
+        const snappedTo = await snapToRoad(toLat, toLon);
 
-    let lastError = null;
+        // Fall back to original coords if snap failed
+        const finalFrom = snappedFrom || { lat: fromLat, lon: fromLon };
+        const finalTo = snappedTo || { lat: toLat, lon: toLon };
 
-    for (const attempt of attempts) {
-        try {
-            console.log(`[directions] trying ${attempt.url}`);
-            const result = await tryDirectionsEndpoint(attempt.url, attempt.auth);
+        if (snappedFrom) {
+            console.log(`[directions] from snapped → (${finalFrom.lat}, ${finalFrom.lon})`);
+        }
+        if (snappedTo) {
+            console.log(`[directions] to   snapped → (${finalTo.lat}, ${finalTo.lon})`);
+        }
 
-            if (result.ok) {
-                const feature = result.data.features?.[0];
-                if (!feature) {
-                    return res.status(502).json({ error: 'No route found' });
-                }
+        // ---- 2. Request the route ----
+        console.log('[directions] requesting route...');
+        const result = await tryDirectionsEndpoint(
+            finalFrom.lon, finalFrom.lat,
+            finalTo.lon, finalTo.lat
+        );
 
-                const summary = feature.properties?.summary || {};
-                console.log(`[directions] ✅ success via ${attempt.url}`);
-
-                return res.json({
-                    distanceKm: Math.round((summary.distance || 0) / 100) / 10,
-                    durationMinutes: Math.round((summary.duration || 0) / 60),
-                    geometry: feature.geometry,
-                    bbox: feature.bbox || null,
-                    provider: attempt.url
-                });
+        if (result.ok) {
+            const feature = result.data.features?.[0];
+            if (!feature) {
+                return res.status(502).json({ error: 'No route found' });
             }
 
-            lastError = result;
-            console.warn(`[directions] ❌ ${attempt.url} returned HTTP ${result.status}: ${result.body.slice(0, 120)}`);
-        } catch (err) {
-            lastError = { status: 500, body: err.message };
-            console.warn(`[directions] ❌ ${attempt.url} threw: ${err.message}`);
-        }
-    }
+            const summary = feature.properties?.summary || {};
+            console.log('[directions] ✅ success');
 
-    res.status(502).json({
-        error: 'Directions service error',
-        status: lastError?.status || 502,
-        hint: 'All endpoints failed. Check ORS_API_KEY and try again.'
-    });
+            return res.json({
+                distanceKm: Math.round((summary.distance || 0) / 100) / 10,
+                durationMinutes: Math.round((summary.duration || 0) / 60),
+                geometry: feature.geometry,
+                bbox: feature.bbox || null,
+                snappedFrom: finalFrom,
+                snappedTo: finalTo
+            });
+        }
+
+        // ---- 3. Handle errors gracefully ----
+        console.warn(`[directions] ❌ ORS returned HTTP ${result.status}: ${result.body.slice(0, 200)}`);
+
+        if (result.status === 404) {
+            return res.status(404).json({
+                error: 'No drivable route found',
+                hint: 'The origin or destination is not near a mapped road, or the route crosses water/borders. Try moving to a location with a clear road nearby.',
+                status: 404
+            });
+        }
+
+        res.status(502).json({
+            error: 'Directions service error',
+            status: result.status,
+            hint: 'ORS rejected the request. Check Render logs for details.'
+        });
+
+    } catch (err) {
+        console.error('[directions] threw:', err.message);
+        res.status(502).json({
+            error: 'Directions service error',
+            status: 500,
+            hint: err.name === 'AbortError' ? 'ORS request timed out.' : err.message
+        });
+    }
 });
 
 let newsCache = { data: null, timestamp: 0 };
