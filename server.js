@@ -767,7 +767,7 @@ app.get('/api/planes/countries', (req, res) => {
 
 /* ------------------------------------------------------------------
    Directions proxy — hides ORS API key from the frontend
-   Tries api.heigit.org first (new), falls back to api.openrouteservice.org (old)
+   Uses the official OpenRouteService API (api.openrouteservice.org)
    ------------------------------------------------------------------ */
 const ORS_API_KEY = process.env.ORS_API_KEY;
 
@@ -832,9 +832,8 @@ app.get('/api/directions', async (req, res) => {
 
     directionsQuery = { fromLat, fromLon, toLat, toLon };
 
+    // OpenRouteService uses the plain API key in the Authorization header.
     const attempts = [
-        { url: 'https://api.heigit.org', auth: `Bearer ${ORS_API_KEY}` },
-        { url: 'https://api.heigit.org', auth: ORS_API_KEY },
         { url: 'https://api.openrouteservice.org', auth: ORS_API_KEY }
     ];
 
@@ -842,7 +841,7 @@ app.get('/api/directions', async (req, res) => {
 
     for (const attempt of attempts) {
         try {
-            console.log(`[directions] trying ${attempt.url} with ${attempt.auth.startsWith('Bearer') ? 'Bearer' : 'Basic'}`);
+            console.log(`[directions] trying ${attempt.url}`);
             const result = await tryDirectionsEndpoint(attempt.url, attempt.auth);
 
             if (result.ok) {
