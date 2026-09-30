@@ -113,6 +113,11 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
+// Ultra-light ping endpoint for keep-alive services (cron-job.org, UptimeRobot)
+app.get('/api/ping', (req, res) => {
+    res.type('text/plain').send('OK');
+});
+
 app.post('/api/register', authLimiter, async (req, res) => {
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -462,10 +467,10 @@ app.get('/api/countries/:code', (req, res) => {
 });
 
 /* ------------------------------------------------------------------
-   Keep-alive self-ping
-   - Works only while the process is already running on Render.
-   - Does NOT wake a sleeping Render free-tier instance.
-   - For real keep-alive, use UptimeRobot / cron-job.org on /api/health.
+   Self-ping (best-effort keep-alive)
+   IMPORTANT: This does NOT wake a sleeping Render free-tier instance.
+   To truly keep the app warm, use UptimeRobot / cron-job.org / Better
+   Stack pointed at:  <your-url>/api/ping   every 5 minutes.
    ------------------------------------------------------------------ */
 function startSelfPing() {
     const baseUrl =
@@ -474,26 +479,64 @@ function startSelfPing() {
         null;
 
     if (!baseUrl) {
-        console.log('[keep-alive] No RENDER_EXTERNAL_URL / SELF_URL set — self-ping disabled.');
+        console.warn(
+            '[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled. ' +
+            'Set one of them in Render → Environment to enable it. ' +
+            'NOTE: this still cannot wake a sleeping instance; use UptimeRobot.'
+        );
         return;
     }
 
-    const healthUrl = `${baseUrl.replace(/\/$/, '')}/api/health`;
-    const INTERVAL_MS = 10 * 60 * 1000;
+    // Use the ultra-light /api/ping endpoint (no DB query)
+    const pingUrl = `${baseUrl.replace(/\/$/, '')}/api/ping`;
+
+    // 5 minutes: comfortably under Render's 15-minute idle threshold.
+    const INTERVAL_MS = 5 * 60 * 1000;
+
+    let consecutiveFailures = 0;
 
     const ping = () => {
-        https.get(healthUrl, (res) => {
-            console.log(`[keep-alive] ping ${healthUrl} → ${res.statusCode}`);
-            res.resume();
-        }).on('error', (err) => {
-            console.warn('[keep-alive] ping failed:', err.message);
+        const req = https.get(
+            pingUrl,
+            { timeout: 8000 },
+            (res) => {
+                res.resume();
+
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    if (consecutiveFailures > 0) {
+                        console.log(
+                            `[keep-alive] recovered after ${consecutiveFailures} failure(s)`
+                        );
+                        consecutiveFailures = 0;
+                    }
+                } else {
+                    consecutiveFailures++;
+                    console.warn(
+                        `[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`
+                    );
+                }
+            }
+        );
+
+        req.on('timeout', () => {
+            consecutiveFailures++;
+            console.warn(`[keep-alive] ping timed out (${consecutiveFailures} in a row)`);
+            req.destroy();
+        });
+
+        req.on('error', (err) => {
+            consecutiveFailures++;
+            console.warn(
+                `[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`
+            );
         });
     };
 
-    setTimeout(ping, 30 * 1000);
-    setInterval(ping, INTERVAL_MS);
+    setTimeout(ping, 20 * 1000);
+    const interval = setInterval(ping, INTERVAL_MS);
+    interval.unref?.();
 
-    console.log(`[keep-alive] self-ping enabled for ${healthUrl} every 10 min`);
+    console.log(`[keep-alive] self-ping enabled: ${pingUrl} every 5 min`);
 }
 
 async function start() {
