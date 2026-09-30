@@ -365,4 +365,74 @@ input, select, textarea {
   .auth-form-side {
     padding: 24px 20px;
   }
+  
+}
+
+
+#bootSplash {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #FAF7F2;
+  color: #1a1a1a;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  transition: opacity 0.5s ease;
+}
+
+#bootSplash.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.boot-splash-logo {
+  font-size: 64px;
+  line-height: 1;
+  animation: bootPulse 1.6s ease-in-out infinite;
+}
+
+.boot-splash-title {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  color: #1a1a1a;
+}
+
+.boot-splash-sub {
+  font-size: 13px;
+  font-weight: 500;
+  color: #8a8478;
+}
+
+.boot-splash-bar {
+  margin-top: 16px;
+  width: 140px;
+  height: 3px;
+  background: rgba(26, 26, 26, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.boot-splash-bar span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  background: #ffb997;
+  border-radius: 3px;
+  animation: bootSlide 1.2s ease-in-out infinite;
+}
+
+@keyframes bootPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.08); opacity: 0.85; }
+}
+
+@keyframes bootSlide {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(120%); }
+  100% { transform: translateX(-100%); }
 }
