@@ -14,7 +14,7 @@
 </head>
 <body class="app-body">
 
-  
+  <!-- ==================== NAVBAR ==================== -->
   <nav class="app-navbar">
     <div class="app-logo">
       <span>✈️</span>
@@ -39,23 +39,23 @@
     </div>
   </nav>
 
-  
+  <!-- ==================== MAIN MAP AREA ==================== -->
   <div class="app-main">
     <div id="map"></div>
 
-    
+    <!-- Loading overlay -->
     <div class="map-loading" id="mapLoading">
       <div class="spinner"></div>
       <p>Loading map...</p>
     </div>
 
-    
+    <!-- Plane count badge (top-left of map) -->
     <div class="plane-badge">
       <span class="dot"></span>
       <span>✈️ <b id="planeCount">0</b> planes</span>
     </div>
 
-    
+    <!-- Country info panel (top-right of map) -->
     <aside class="info-panel" id="infoPanel">
       <div class="info-panel-header">
         <button class="info-panel-close" id="closeInfo">✕</button>
@@ -127,7 +127,7 @@
     </aside>
   </div>
 
-  
+  <!-- ==================== STATUS BAR ==================== -->
   <div class="status-bar">
     <div class="status-stats">
       <span class="status-stat">✈️ <b id="statusPlanes">0</b> planes</span>
@@ -137,11 +137,23 @@
     <span class="status-updated" id="statusUpdated">—</span>
   </div>
 
-  
+  <!-- ==================== ROUTE DIRECTIONS UI (NEW) ==================== -->
+  <!-- Backdrop: dims the map on mobile when the route sheet is open -->
+  <div class="route-backdrop" id="routeBackdrop"></div>
+
+  <!-- Route sheet: bottom sheet on mobile, side panel on desktop -->
+  <aside class="route-sheet" id="routeSheet" aria-hidden="true" role="dialog" aria-label="Directions">
+    <div class="route-sheet-header"></div>
+    <div class="route-sheet-body"></div>
+    <div class="route-sheet-actions"></div>
+  </aside>
+
+  <!-- ==================== SCRIPTS ==================== -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="js/toast.js"></script>
   <script src="js/map.js"></script>
   <script src="js/country.js"></script>
+  <script src="js/route.js"></script>   <!-- NEW: must load before app.js -->
   <script src="js/app.js"></script>
 </body>
 </html>
