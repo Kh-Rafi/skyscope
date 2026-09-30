@@ -7,6 +7,8 @@ const rateLimit = require('express-rate-limit');
 const countryBounds = require('./data/country-bounds');
 const Parser = require('rss-parser');
 const https = require('https');
+const booleanPointInPolygon = require('@turf/boolean-point-in-polygon').default;
+const { point } = require('@turf/helpers');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -95,6 +97,115 @@ function countryFromHex(hex) {
     return ICAO_COUNTRY_PREFIXES[prefix] || 'Unknown';
 }
 
+/* ------------------------------------------------------------------
+   Geospatial: load country polygons + point-in-polygon border check
+   The geo-countries dataset uses ADM0_A3, NOT ISO_A3 — we check both.
+   ------------------------------------------------------------------ */
+const GEOJSON_PATH = path.join(__dirname, 'data', 'countries.geojson');
+let countryPolygons = [];
+
+function loadCountryPolygons() {
+    try {
+        if (!fs.existsSync(GEOJSON_PATH)) {
+            console.warn(`[geo] ${GEOJSON_PATH} not found — border filter disabled`);
+            return;
+        }
+        const raw = fs.readFileSync(GEOJSON_PATH, 'utf8');
+        const geojson = JSON.parse(raw);
+
+        if (!geojson.features || !Array.isArray(geojson.features)) {
+            console.warn('[geo] GeoJSON has no features array');
+            return;
+        }
+
+        let loaded = 0;
+        for (const feature of geojson.features) {
+            if (!feature.geometry || !feature.properties) continue;
+
+            const props = feature.properties;
+            const name = props.ADMIN || props.name || props.NAME || null;
+
+            // ISO2 — try every known property name
+            const rawIso2 = props.ISO_A2 || props.iso_a2 || props.ISO2 ||
+                            props.WB_A2 || props.POSTAL || props.ISO_A2_EH || null;
+            const iso2 = rawIso2 && rawIso2 !== '-99'
+                ? String(rawIso2).toUpperCase()
+                : null;
+
+            // ISO3 — ADM0_A3 is the key field in geo-countries dataset
+            const rawIso3 = props.ADM0_A3 || props.SOV_A3 || props.ISO_A3 ||
+                            props.iso_a3 || props.ISO3 || props.ADM0_A3_US || null;
+            const iso3 = rawIso3 && rawIso3 !== '-99'
+                ? String(rawIso3).toUpperCase()
+                : null;
+
+            if (!name) continue;
+
+            countryPolygons.push({
+                name,
+                iso2,
+                iso3,
+                geometry: feature.geometry
+            });
+            loaded++;
+        }
+        console.log(`[geo] Loaded ${loaded} country polygons for border filtering`);
+    } catch (err) {
+        console.error('[geo] Failed to load countries.geojson:', err.message);
+    }
+}
+
+/**
+ * Check whether a lat/lon point is inside the given country's real border.
+ * Lookup order: ISO3 → ISO2 → country name. Fail-open if nothing matches.
+ */
+function isInsideCountry(lat, lon, iso2, iso3) {
+    if (countryPolygons.length === 0) return true;
+    if (lat == null || lon == null) return false;
+
+    const pt = point([lon, lat]);
+    const iso2u = iso2 ? String(iso2).toUpperCase() : null;
+    const iso3u = iso3 ? String(iso3).toUpperCase() : null;
+
+    // 1. ISO3 lookup
+    let entry = iso3u ? countryPolygons.find(e => e.iso3 === iso3u) : null;
+
+    // 2. ISO2 lookup
+    if (!entry && iso2u) {
+        entry = countryPolygons.find(e => e.iso2 === iso2u);
+    }
+
+    // 3. Name-based fallback
+    if (!entry && iso2u) {
+        const countryObj = countriesData.find(c => c.cca2 === iso2u);
+        if (countryObj) {
+            const nameLower = countryObj.name.common.toLowerCase();
+            entry = countryPolygons.find(e =>
+                e.name && e.name.toLowerCase() === nameLower
+            );
+            if (entry) {
+                console.log(`[geo] matched ${iso2u} by name: "${entry.name}"`);
+            }
+        }
+    }
+
+    // No polygon → fail open
+    if (!entry) {
+        console.warn(`[geo] no polygon for ${iso2u || iso3u} — allowing plane`);
+        return true;
+    }
+
+    try {
+        return booleanPointInPolygon(pt, entry.geometry);
+    } catch (err) {
+        console.warn(`[geo] PIP failed for ${iso2u}:`, err.message);
+        return true;
+    }
+}
+
+// Load polygons at startup
+loadCountryPolygons();
+
 const countriesPath = path.join(__dirname, 'data', 'countries.json');
 let countriesData = [];
 
@@ -164,7 +275,8 @@ app.get('/api/health', async (req, res) => {
             app: 'SkyScope',
             database: 'connected',
             time: new Date().toISOString(),
-            countriesLoaded: countriesData.length
+            countriesLoaded: countriesData.length,
+            countryPolygons: countryPolygons.length
         });
     } catch (err) {
         res.status(503).json({
@@ -175,12 +287,28 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
-// Ultra-light ping endpoint for keep-alive services (cron-job.org, UptimeRobot)
 app.get('/api/ping', (req, res) => {
     res.type('text/plain').send('OK');
 });
 
-// Diagnostic: check what bounds are being used for a country
+// Diagnostic: see what ISO codes exist in the loaded GeoJSON
+app.get('/api/geo/countries', (req, res) => {
+    const bd = countryPolygons.find(p =>
+        p.iso2 === 'BD' || p.iso3 === 'BGD' ||
+        (p.name && p.name.toLowerCase().includes('bangladesh'))
+    );
+
+    res.json({
+        totalLoaded: countryPolygons.length,
+        bangladesh: bd || null,
+        sample: countryPolygons.slice(0, 5).map(p => ({
+            name: p.name,
+            iso2: p.iso2,
+            iso3: p.iso3
+        }))
+    });
+});
+
 app.get('/api/planes/debug', (req, res) => {
     const country = String(req.query.country || 'BD').toUpperCase();
     let bounds = countryBounds[country];
@@ -211,6 +339,7 @@ app.get('/api/planes/debug', (req, res) => {
         center: { lat: centerLat, lon: centerLon },
         radiusNM,
         source,
+        polygonsLoaded: countryPolygons.length,
         url: `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`
     });
 });
@@ -362,7 +491,7 @@ app.get('/api/airports/:ident', async (req, res) => {
 });
 
 let planesCache = {};
-const PLANES_CACHE_DURATION = 30000;
+const PLANES_CACHE_DURATION = 60000;
 
 app.get('/api/planes/live', async (req, res) => {
     const country = String(req.query.country || 'BD').toUpperCase();
@@ -374,7 +503,6 @@ app.get('/api/planes/live', async (req, res) => {
         if (countryObj && countryObj.latlng && countryObj.latlng.length === 2) {
             const [lat, lng] = countryObj.latlng;
             const area = countryObj.area || 100000;
-            // ---- BIGGER fallback box ----
             const sizeDeg = Math.min(20, Math.max(2.5, Math.sqrt(area) / 60));
             bounds = [lat - sizeDeg, lat + sizeDeg, lng - sizeDeg, lng + sizeDeg];
             boundsSource = 'fallback';
@@ -389,19 +517,13 @@ app.get('/api/planes/live', async (req, res) => {
         return res.json(planesCache[country].data);
     }
 
-    // ================================================================
-    // ADSB.LOL API (replaces OpenSky — no IP blocking, no API key)
-    // ================================================================
     const [lamin, lamax, lomin, lomax] = bounds;
     const centerLat = (lamin + lamax) / 2;
     const centerLon = (lomin + lomax) / 2;
-    // ---- BIGGER radius: min 150 NM, max 1000 NM ----
     const latSpan = lamax - lamin;
     const radiusNM = Math.min(1000, Math.max(150, latSpan * 60));
 
     const url = `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`;
-
-    console.log(`[planes] ${country} → bounds[${boundsSource}] center(${centerLat.toFixed(2)},${centerLon.toFixed(2)}) radius=${radiusNM}NM`);
 
     try {
         const fetch = (await import('node-fetch')).default;
@@ -419,7 +541,6 @@ app.get('/api/planes/live', async (req, res) => {
         }
 
         if (!response.ok) {
-            console.warn(`[planes] adsb.lol returned ${response.status} for ${country}`);
             if (planesCache[country]) return res.json(planesCache[country].data);
             return res.status(502).json({
                 error: 'adsb.lol API error',
@@ -429,12 +550,12 @@ app.get('/api/planes/live', async (req, res) => {
         }
 
         const data = await response.json();
+        const rawCount = (data.ac || []).length;
 
-        console.log(`[planes] adsb.lol returned ${(data.ac || []).length} raw aircraft for ${country}`);
-
-        // Map adsb.lol fields to the format your frontend expects
+        // Map + filter by actual country border
         const planes = (data.ac || [])
             .filter(a => a.lat != null && a.lon != null)
+            .filter(a => isInsideCountry(a.lat, a.lon, country, null))
             .map(a => ({
                 icao24: a.hex || 'unknown',
                 callsign: (a.flight || '').trim() || a.r || 'Unknown',
@@ -443,19 +564,20 @@ app.get('/api/planes/live', async (req, res) => {
                 latitude: a.lat,
                 altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
                 on_ground: a.ground || false,
-                velocity: a.gs ? Math.round(a.gs * 1.852) : 0, // knots to km/h
+                velocity: a.gs ? Math.round(a.gs * 1.852) : 0,
                 heading: a.track ? Math.round(a.track) : 0,
                 vertical_rate: a.baro_rate || 0,
                 geo_altitude: a.alt_geom ? Math.round(a.alt_geom) : 0,
                 squawk: a.squawk || null
             }));
 
-        console.log(`[planes] after filter: ${planes.length} planes for ${country}`);
+        console.log(
+            `[planes] ${country} [${boundsSource}] → raw ${rawCount}, inside borders ${planes.length}`
+        );
 
         planesCache[country] = { data: planes, timestamp: now };
         res.json(planes);
     } catch (err) {
-        console.error(`[planes] error for ${country}:`, err.message);
         if (planesCache[country]) return res.json(planesCache[country].data);
         res.status(502).json({
             error: err.name === 'AbortError' ? 'adsb.lol API timeout' : 'Flight data unavailable',
@@ -576,9 +698,6 @@ app.get('/api/countries/:code', (req, res) => {
     res.json(found);
 });
 
-/* ------------------------------------------------------------------
-   Self-ping (best-effort keep-alive)
-   ------------------------------------------------------------------ */
 function startSelfPing() {
     const baseUrl =
         process.env.RENDER_EXTERNAL_URL ||
