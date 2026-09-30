@@ -704,12 +704,24 @@ async function fetchAndCachePlanes(country) {
     return planes;
 }
 
+/* ---- Prefetch cooldown tracking (Fix 1) ---- */
+const lastPrefetchAttempt = {};
+const PREFETCH_COOLDOWN_MS = 60 * 1000;
+
 function prefetchNeighbors(country) {
     const neighbors = NEIGHBORS[country];
     if (!neighbors || neighbors.length === 0) {
         console.log(`[prefetch] no neighbors configured for ${country}`);
         return;
     }
+
+    // Cooldown — skip if we already tried prefetching for this country recently
+    const now = Date.now();
+    if (lastPrefetchAttempt[country] && (now - lastPrefetchAttempt[country]) < PREFETCH_COOLDOWN_MS) {
+        console.log(`[prefetch] skipping ${country} — cooldown active`);
+        return;
+    }
+    lastPrefetchAttempt[country] = now;
 
     const stale = neighbors.filter(n => {
         const c = planesCache[n];
@@ -835,21 +847,18 @@ async function reverseGeocode(lat, lon) {
 
 // --- Find a routable point using the fallback chain ---
 async function findRoutablePoint(lat, lon, label) {
-    // Try ORS snap first
     const snapped = await snapToRoad(lat, lon);
     if (snapped) {
         console.log(`[directions] ${label}: ORS snap → (${snapped.lat}, ${snapped.lon})`);
         return snapped;
     }
 
-    // Fall back to Nominatim
     const geo = await reverseGeocode(lat, lon);
     if (geo) {
         console.log(`[directions] ${label}: Nominatim → (${geo.lat}, ${geo.lon})`);
         return geo;
     }
 
-    // Last resort
     console.log(`[directions] ${label}: using original (${lat}, ${lon})`);
     return { lat, lon };
 }
@@ -910,14 +919,12 @@ app.get('/api/directions', async (req, res) => {
     }
 
     try {
-        // ---- 1. Find routable points for BOTH endpoints ----
         console.log(`[directions] resolving from (${fromLat}, ${fromLon})`);
         const finalFrom = await findRoutablePoint(fromLat, fromLon, 'from');
 
         console.log(`[directions] resolving to   (${toLat}, ${toLon})`);
         const finalTo = await findRoutablePoint(toLat, toLon, 'to');
 
-        // ---- 2. Request the route ----
         console.log('[directions] requesting route...');
         const result = await tryDirectionsEndpoint(
             finalFrom.lon, finalFrom.lat,
@@ -943,7 +950,6 @@ app.get('/api/directions', async (req, res) => {
             });
         }
 
-        // ---- 3. Handle errors gracefully ----
         console.warn(`[directions] ❌ ORS returned HTTP ${result.status}: ${result.body.slice(0, 200)}`);
 
         if (result.status === 404) {
