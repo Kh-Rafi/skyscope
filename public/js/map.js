@@ -27,7 +27,22 @@ function initMap() {
   airportLayer = L.layerGroup().addTo(map);
   planeLayer = L.layerGroup().addTo(map);
 
+  // ---- Hide the boot splash once the map is ready ----
+  hideBootSplash();
+
   return map;
+}
+
+// ---- Boot splash control ----
+function hideBootSplash() {
+  const splash = document.getElementById('bootSplash');
+  if (!splash) return;
+
+  // Small delay so the fade-out feels intentional, not abrupt
+  setTimeout(() => {
+    splash.classList.add('hidden');
+    setTimeout(() => splash.remove(), 600);
+  }, 300);
 }
 
 function drawAirports(airports) {
@@ -96,8 +111,6 @@ function drawAirports(airports) {
 }
 
 // ---- DELEGATED EVENT LISTENER FOR "GET DIRECTIONS" BUTTON ----
-// This listens for clicks on the button inside any airport popup.
-// It finds the airport data from the marker and calls getDirectionsTo().
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.get-directions-btn');
   if (!btn) return;
@@ -105,7 +118,6 @@ document.addEventListener('click', function(e) {
   const ident = btn.dataset.ident;
   if (!ident) return;
 
-  // Find the airport object in the global airportMarkers array
   const found = airportMarkers.find(m => m.data && m.data.ident === ident);
   if (found && typeof getDirectionsTo === 'function') {
     getDirectionsTo(found.data);
@@ -122,10 +134,8 @@ function drawPlanes(planes) {
   planeLayer.clearLayers();
   planeMarkers = [];
 
-  // ---- Count grounded vs flying ----
   const groundedCount = planes.filter(p => p.on_ground === true).length;
 
-  // ---- Update counters (both total and grounded) ----
   if (typeof updatePlaneCounter === 'function') {
     updatePlaneCounter(planes.length, groundedCount);
   } else {
