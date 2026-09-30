@@ -322,7 +322,6 @@ app.get('/api/planes/debug', (req, res) => {
     });
 });
 
-// === CHANGED: added endpoint to list which countries are currently cached ===
 app.get('/api/planes/cached', (req, res) => {
     const entries = Object.entries(planesCache).map(([country, v]) => ({
         country,
@@ -482,10 +481,8 @@ app.get('/api/airports/:ident', async (req, res) => {
    Live planes with cache + neighbor prefetch
    ------------------------------------------------------------------ */
 let planesCache = {};
-// === CHANGED: cache duration from 60s to 180s (3 minutes) ===
-const PLANES_CACHE_DURATION = 180000;
+const PLANES_CACHE_DURATION = 180000; // 3 minutes
 
-// === CHANGED: expanded neighbor map covering more countries ===
 const NEIGHBORS = {
     // South Asia
     IN: ['PK', 'BD', 'NP', 'LK', 'MM', 'BT', 'AF'],
@@ -629,9 +626,6 @@ const NEIGHBORS = {
     SS: ['SD', 'ET', 'KE', 'UG', 'CD', 'CF'],
 };
 
-/**
- * Fetch planes for a country and store in cache.
- */
 async function fetchAndCachePlanes(country) {
     const cached = planesCache[country];
     if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
@@ -710,9 +704,6 @@ async function fetchAndCachePlanes(country) {
     return planes;
 }
 
-/**
- * Background prefetch: fire-and-forget fetch for neighboring countries.
- */
 function prefetchNeighbors(country) {
     const neighbors = NEIGHBORS[country];
     if (!neighbors || neighbors.length === 0) {
@@ -720,7 +711,6 @@ function prefetchNeighbors(country) {
         return;
     }
 
-    // Filter out countries already fresh in cache
     const stale = neighbors.filter(n => {
         const c = planesCache[n];
         return !c || (Date.now() - c.timestamp > PLANES_CACHE_DURATION);
@@ -747,8 +737,6 @@ app.get('/api/planes/live', async (req, res) => {
 
     const cached = planesCache[country];
     if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
-        // === CHANGED: even on cache hit, still kick off background refresh
-        // so the next visit is fresh without the user waiting ===
         setImmediate(() => {
             fetchAndCachePlanes(country)
                 .then(() => prefetchNeighbors(country))
@@ -775,6 +763,119 @@ app.get('/api/planes/live', async (req, res) => {
 
 app.get('/api/planes/countries', (req, res) => {
     res.json(Object.keys(countryBounds));
+});
+
+/* ------------------------------------------------------------------
+   Directions proxy — hides ORS API key from the frontend
+   Tries api.heigit.org first (new), falls back to api.openrouteservice.org (old)
+   ------------------------------------------------------------------ */
+const ORS_API_KEY = process.env.ORS_API_KEY;
+
+let directionsQuery = {};
+
+async function tryDirectionsEndpoint(baseUrl, authHeader) {
+    const fetch = (await import('node-fetch')).default;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    try {
+        const response = await fetch(
+            `${baseUrl}/v2/directions/driving-car/geojson`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': authHeader,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, application/geo+json'
+                },
+                body: JSON.stringify({
+                    coordinates: [
+                        [directionsQuery.fromLon, directionsQuery.fromLat],
+                        [directionsQuery.toLon, directionsQuery.toLat]
+                    ]
+                }),
+                signal: controller.signal
+            }
+        );
+
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            return { ok: false, status: response.status, body: errText };
+        }
+
+        const data = await response.json();
+        return { ok: true, data };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+app.get('/api/directions', async (req, res) => {
+    if (!ORS_API_KEY) {
+        return res.status(503).json({
+            error: 'Directions service not configured',
+            hint: 'Missing ORS_API_KEY environment variable'
+        });
+    }
+
+    const fromLat = Number(req.query.fromLat);
+    const fromLon = Number(req.query.fromLon);
+    const toLat = Number(req.query.toLat);
+    const toLon = Number(req.query.toLon);
+
+    if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)) {
+        return res.status(400).json({
+            error: 'Invalid coordinates',
+            hint: 'Provide fromLat, fromLon, toLat, toLon'
+        });
+    }
+
+    directionsQuery = { fromLat, fromLon, toLat, toLon };
+
+    const attempts = [
+        { url: 'https://api.heigit.org', auth: `Bearer ${ORS_API_KEY}` },
+        { url: 'https://api.heigit.org', auth: ORS_API_KEY },
+        { url: 'https://api.openrouteservice.org', auth: ORS_API_KEY }
+    ];
+
+    let lastError = null;
+
+    for (const attempt of attempts) {
+        try {
+            console.log(`[directions] trying ${attempt.url} with ${attempt.auth.startsWith('Bearer') ? 'Bearer' : 'Basic'}`);
+            const result = await tryDirectionsEndpoint(attempt.url, attempt.auth);
+
+            if (result.ok) {
+                const feature = result.data.features?.[0];
+                if (!feature) {
+                    return res.status(502).json({ error: 'No route found' });
+                }
+
+                const summary = feature.properties?.summary || {};
+                console.log(`[directions] ✅ success via ${attempt.url}`);
+
+                return res.json({
+                    distanceKm: Math.round((summary.distance || 0) / 100) / 10,
+                    durationMinutes: Math.round((summary.duration || 0) / 60),
+                    geometry: feature.geometry,
+                    bbox: feature.bbox || null,
+                    provider: attempt.url
+                });
+            }
+
+            lastError = result;
+            console.warn(`[directions] ❌ ${attempt.url} returned HTTP ${result.status}: ${result.body.slice(0, 120)}`);
+        } catch (err) {
+            lastError = { status: 500, body: err.message };
+            console.warn(`[directions] ❌ ${attempt.url} threw: ${err.message}`);
+        }
+    }
+
+    res.status(502).json({
+        error: 'Directions service error',
+        status: lastError?.status || 502,
+        hint: 'All endpoints failed. Check ORS_API_KEY and try again.'
+    });
 });
 
 let newsCache = { data: null, timestamp: 0 };
