@@ -12,16 +12,16 @@ const HEAVY_COUNTRIES = ['US', 'CN', 'IN', 'RU', 'BR', 'AU', 'CA', 'MX'];
 let currentCountry = 'BD';
 let planesInterval = null;
 
-// ---- Request tracking (fixes race conditions) ----
 let planesAbortController = null;
 let airportsAbortController = null;
 let planesRequestId = 0;
 let airportsRequestId = 0;
 
-// ---- Client-side cache (instant country switch feel) ----
-const planesCache = new Map();   // country -> { planes, timestamp }
-const airportsCache = new Map(); // country -> airports
-const CACHE_TTL = 60 * 1000;     // 60 seconds
+const planesCache = new Map();
+const airportsCache = new Map();
+const CACHE_TTL = 3 * 60 * 1000;
+
+const prefetchedCountries = new Set();
 
 async function initApp() {
   console.log('🚀 Initializing SkyScope...');
@@ -98,14 +98,12 @@ async function fetchAirports(code) {
 }
 
 async function loadPlanes(code, silent = false) {
-  // 1. Cancel any pending plane request
   if (planesAbortController) {
     planesAbortController.abort();
   }
   planesAbortController = new AbortController();
   const myRequestId = ++planesRequestId;
 
-  // 2. Instant UI feedback
   const cached = planesCache.get(code);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     drawPlanes(cached.planes);
@@ -117,7 +115,6 @@ async function loadPlanes(code, silent = false) {
     }
   }
 
-  // 3. Fetch fresh data
   try {
     const res = await fetch(`${APP_API}/planes/live?country=${code}`, {
       signal: planesAbortController.signal
@@ -129,13 +126,34 @@ async function loadPlanes(code, silent = false) {
 
     let planes = await res.json();
 
+    // ---- Handle server error response ----
     if (!res.ok) {
-      if (!silent) showToast(planes.error || 'Failed to load planes', 'warning');
+      // If we have stale cache, silently use it (don't scare the user)
+      const stale = planesCache.get(code);
+      if (stale) {
+        drawPlanes(stale.planes);
+        updateStatusUpdated();
+        showPlanesLoading(false);
+        if (!silent) {
+          showToast(
+            '⚠️ Live data temporarily unavailable — showing last known positions.',
+            'warning',
+            6000
+          );
+        }
+        return;
+      }
+
+      // No cache at all — show a real error
       showPlanesLoading(false);
+      if (!silent) {
+        const msg = planes.error || 'Flight data unavailable';
+        showToast(`⚠️ ${msg}. Try again in a moment.`, 'warning', 6000);
+      }
       return;
     }
 
-    // 4. Filter to country bounding box
+    // ---- Filter to country bounding box ----
     const bounds = (typeof COUNTRY_BOUNDS !== 'undefined') ? COUNTRY_BOUNDS[code] : null;
     if (bounds && Array.isArray(planes)) {
       const [lamin, lamax, lomin, lomax] = bounds;
@@ -147,7 +165,7 @@ async function loadPlanes(code, silent = false) {
       });
     }
 
-    // 5. Cap plane count — reserve 30 slots for grounded planes
+    // ---- Cap plane count — reserve 30 slots for grounded planes ----
     if (Array.isArray(planes) && planes.length > MAX_PLANES) {
       const flying = planes.filter(p => !p.on_ground);
       const grounded = planes.filter(p => p.on_ground);
@@ -158,7 +176,6 @@ async function loadPlanes(code, silent = false) {
       ];
     }
 
-    // 6. Cache + render
     planesCache.set(code, { planes, timestamp: Date.now() });
 
     if (myRequestId === planesRequestId) {
@@ -175,7 +192,8 @@ async function loadPlanes(code, silent = false) {
 
       if (!silent) {
         const groundedCount = planes.filter(p => p.on_ground).length;
-        console.log(`✈️ ${code}: ${planes.length} planes (${groundedCount} on ground)`);
+        const flyingCount = planes.length - groundedCount;
+        console.log(`✈️ ${code}: ${planes.length} planes (${flyingCount} flying, ${groundedCount} on ground)`);
       }
     }
 
@@ -184,7 +202,22 @@ async function loadPlanes(code, silent = false) {
       return;
     }
     console.error('Planes fetch error:', err);
-    if (!silent) showToast('Planes unavailable', 'warning');
+
+    // Try stale cache on network error too
+    const stale = planesCache.get(code);
+    if (stale) {
+      drawPlanes(stale.planes);
+      updateStatusUpdated();
+      showPlanesLoading(false);
+      if (!silent) {
+        showToast('⚠️ Network issue — showing last known positions.', 'warning', 6000);
+      }
+      return;
+    }
+
+    if (!silent) {
+      showToast('⚠️ Flight data unavailable. Check your connection and try again.', 'warning', 6000);
+    }
     showPlanesLoading(false);
   }
 }
@@ -199,7 +232,72 @@ function showPlanesLoading(isLoading) {
   }
 }
 
-document.getElementById('countrySelect').addEventListener('change', async (e) => {
+// === NEW: dedicated counter updater (shows flying / grounded split) ===
+function updatePlaneCounter(total, grounded) {
+  const flying = total - grounded;
+
+  const badge = document.getElementById('planeCount');
+  const status = document.getElementById('statusPlanes');
+
+  // Compact format for the badge: "42 (8 on ground)"
+  const badgeHtml = total === 0
+    ? '0'
+    : `${total}<span style="opacity:0.65; font-weight:500; font-size:11px; margin-left:4px;">(${grounded} on ground)</span>`;
+
+  if (badge) badge.innerHTML = badgeHtml;
+
+  // Full format for the status bar: "✈️ 34 flying · 🛬 8 on ground"
+  if (status) {
+    status.innerHTML = total === 0
+      ? '0'
+      : `<span style="color:#e53935;">✈️ ${flying}</span> · <span style="color:#43a047;">🛬 ${grounded}</span>`;
+  }
+}
+
+function prefetchCountry(code) {
+  if (!code) return;
+  if (prefetchedCountries.has(code)) return;
+  prefetchedCountries.add(code);
+
+  const cached = planesCache.get(code);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) return;
+
+  console.log(`[prefetch-client] warming ${code}`);
+  fetch(`${APP_API}/planes/live?country=${code}`)
+    .then(res => res.json())
+    .then(planes => {
+      if (Array.isArray(planes)) {
+        planesCache.set(code, { planes, timestamp: Date.now() });
+        console.log(`[prefetch-client] ✅ ${code} cached (${planes.length} planes)`);
+      }
+    })
+    .catch(err => {
+      console.warn(`[prefetch-client] ❌ ${code}: ${err.message}`);
+      prefetchedCountries.delete(code);
+    });
+}
+
+const countrySelectEl = document.getElementById('countrySelect');
+
+countrySelectEl.addEventListener('mousedown', () => {
+  const options = Array.from(countrySelectEl.options).slice(0, 5);
+  options.forEach(opt => {
+    if (opt.value && opt.value !== currentCountry) {
+      prefetchCountry(opt.value);
+    }
+  });
+});
+
+countrySelectEl.addEventListener('mouseover', (e) => {
+  if (e.target.tagName === 'OPTION') {
+    const code = e.target.value;
+    if (code && code !== currentCountry) {
+      prefetchCountry(code);
+    }
+  }
+});
+
+countrySelectEl.addEventListener('change', async (e) => {
   const code = e.target.value;
   if (!code) return;
 
