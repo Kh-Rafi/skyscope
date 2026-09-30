@@ -1,5 +1,3 @@
-
-
 .app-body {
   height: 100vh;
   overflow: hidden;
@@ -430,6 +428,21 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+
+/* ---- Loading dots animation (used while planes are being fetched) ---- */
+.loading-dots {
+  display: inline-block;
+  animation: pulse-dots 1.2s ease-in-out infinite;
+  color: var(--peach);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+@keyframes pulse-dots {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 
 
