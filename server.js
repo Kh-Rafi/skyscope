@@ -6,7 +6,6 @@ const bcrypt = require('bcryptjs');
 const rateLimit = require('express-rate-limit');
 const countryBounds = require('./data/country-bounds');
 const Parser = require('rss-parser');
-const https = require('https');
 const booleanPointInPolygon = require('@turf/boolean-point-in-polygon').default;
 const { point } = require('@turf/helpers');
 
@@ -704,9 +703,22 @@ async function fetchAndCachePlanes(country) {
     return planes;
 }
 
-/* ---- Prefetch cooldown tracking (Fix 1) ---- */
+/* ==================================================================
+   PREFETCH — serialized with a global rate limiter
+   
+   adsb.lol allows ~1 request/second. We enforce a strict serial
+   queue with a 1.5s minimum gap between ANY two outgoing requests.
+   This prevents the 429 storm.
+   ================================================================== */
+
 const lastPrefetchAttempt = {};
-const PREFETCH_COOLDOWN_MS = 60 * 1000;
+const PREFETCH_COOLDOWN_MS = 60 * 1000;   // Don't prefetch same trigger country more than once/minute
+const MIN_GAP_BETWEEN_REQUESTS_MS = 1500; // Minimum gap between ANY two adsb.lol requests
+
+let isFlushingQueue = false;
+const prefetchQueue = [];
+let lastRequestTime = 0;
+let currentPrefetchTarget = null;
 
 function prefetchNeighbors(country) {
     const neighbors = NEIGHBORS[country];
@@ -715,13 +727,14 @@ function prefetchNeighbors(country) {
         return;
     }
 
-    // Cooldown — skip if we already tried prefetching for this country recently
     const now = Date.now();
     if (lastPrefetchAttempt[country] && (now - lastPrefetchAttempt[country]) < PREFETCH_COOLDOWN_MS) {
         console.log(`[prefetch] skipping ${country} — cooldown active`);
         return;
     }
     lastPrefetchAttempt[country] = now;
+
+    currentPrefetchTarget = country;
 
     const stale = neighbors.filter(n => {
         const c = planesCache[n];
@@ -735,13 +748,55 @@ function prefetchNeighbors(country) {
 
     console.log(`[prefetch] queueing ${stale.length} neighbors of ${country}: ${stale.join(',')}`);
 
-    stale.forEach((neighbor, i) => {
-        setTimeout(() => {
-            fetchAndCachePlanes(neighbor)
-                .then(() => console.log(`[prefetch] ✅ ${neighbor} cached`))
-                .catch(err => console.warn(`[prefetch] ❌ ${neighbor}: ${err.message}`));
-        }, 500 + (i * 800));
+    prefetchQueue.length = 0;
+
+    stale.forEach(neighbor => {
+        prefetchQueue.push({ country: neighbor, target: country });
     });
+
+    flushPrefetchQueue();
+}
+
+async function flushPrefetchQueue() {
+    if (isFlushingQueue) return;
+    isFlushingQueue = true;
+
+    try {
+        while (prefetchQueue.length > 0) {
+            const item = prefetchQueue.shift();
+
+            if (item.target !== currentPrefetchTarget) {
+                console.log(`[prefetch] discard ${item.country} — user switched away from ${item.target}`);
+                continue;
+            }
+
+            const sinceLast = Date.now() - lastRequestTime;
+            if (sinceLast < MIN_GAP_BETWEEN_REQUESTS_MS) {
+                await new Promise(r => setTimeout(r, MIN_GAP_BETWEEN_REQUESTS_MS - sinceLast));
+            }
+
+            const cached = planesCache[item.country];
+            if (cached && (Date.now() - cached.timestamp) < PLANES_CACHE_DURATION) {
+                console.log(`[prefetch] skip ${item.country} — already fresh`);
+                continue;
+            }
+
+            try {
+                lastRequestTime = Date.now();
+                await fetchAndCachePlanes(item.country);
+                console.log(`[prefetch] ✅ ${item.country} cached`);
+            } catch (err) {
+                console.warn(`[prefetch] ❌ ${item.country}: ${err.message}`);
+
+                if (String(err.message).includes('429')) {
+                    console.warn(`[prefetch] rate-limited — backing off 30s`);
+                    await new Promise(r => setTimeout(r, 30000));
+                }
+            }
+        }
+    } finally {
+        isFlushingQueue = false;
+    }
 }
 
 app.get('/api/planes/live', async (req, res) => {
@@ -788,7 +843,6 @@ app.get('/api/planes/countries', (req, res) => {
    ------------------------------------------------------------------ */
 const ORS_API_KEY = process.env.ORS_API_KEY;
 
-// --- Tier 1: Snap coordinate to nearest road using ORS /snap ---
 async function snapToRoad(lat, lon) {
     const fetch = (await import('node-fetch')).default;
     const url = `https://api.openrouteservice.org/v2/snap/driving-car?lat=${lat}&lon=${lon}`;
@@ -815,7 +869,6 @@ async function snapToRoad(lat, lon) {
     }
 }
 
-// --- Tier 2: Nominatim reverse geocode to find a road-adjacent point ---
 async function reverseGeocode(lat, lon) {
     const fetch = (await import('node-fetch')).default;
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=16&addressdetails=1`;
@@ -845,7 +898,6 @@ async function reverseGeocode(lat, lon) {
     }
 }
 
-// --- Find a routable point using the fallback chain ---
 async function findRoutablePoint(lat, lon, label) {
     const snapped = await snapToRoad(lat, lon);
     if (snapped) {
@@ -863,7 +915,6 @@ async function findRoutablePoint(lat, lon, label) {
     return { lat, lon };
 }
 
-// --- Core routing call ---
 async function tryDirectionsEndpoint(fromLon, fromLat, toLon, toLat) {
     const fetch = (await import('node-fetch')).default;
     const controller = new AbortController();
@@ -1085,65 +1136,13 @@ app.get('/api/countries/:code', (req, res) => {
 });
 
 /* ------------------------------------------------------------------
-   Self-ping (best-effort keep-alive)
+   Server startup (NO self-ping — cron-job.org handles keep-alive
+   externally with an HTTP request to /api/ping every 5 minutes)
    ------------------------------------------------------------------ */
-function startSelfPing() {
-    const baseUrl =
-        process.env.RENDER_EXTERNAL_URL ||
-        process.env.SELF_URL ||
-        null;
-
-    if (!baseUrl) {
-        console.warn('[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled.');
-        return;
-    }
-
-    const pingUrl = `${baseUrl.replace(/\/$/, '')}/api/ping`;
-    const INTERVAL_MS = 5 * 60 * 1000;
-    let consecutiveFailures = 0;
-
-    const ping = () => {
-        const req = https.get(
-            pingUrl,
-            { timeout: 8000 },
-            (res) => {
-                res.resume();
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                    if (consecutiveFailures > 0) {
-                        console.log(`[keep-alive] recovered after ${consecutiveFailures} failure(s)`);
-                        consecutiveFailures = 0;
-                    }
-                } else {
-                    consecutiveFailures++;
-                    console.warn(`[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`);
-                }
-            }
-        );
-
-        req.on('timeout', () => {
-            consecutiveFailures++;
-            console.warn(`[keep-alive] ping timed out (${consecutiveFailures} in a row)`);
-            req.destroy();
-        });
-
-        req.on('error', (err) => {
-            consecutiveFailures++;
-            console.warn(`[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`);
-        });
-    };
-
-    setTimeout(ping, 20 * 1000);
-    const interval = setInterval(ping, INTERVAL_MS);
-    interval.unref?.();
-
-    console.log(`[keep-alive] self-ping enabled: ${pingUrl} every 5 min`);
-}
-
 async function start() {
     await initializeDatabase();
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`SkyScope listening on port ${PORT}`);
-        startSelfPing();
     });
 }
 
