@@ -99,7 +99,6 @@ function countryFromHex(hex) {
 
 /* ------------------------------------------------------------------
    Geospatial: load country polygons + point-in-polygon border check
-   The geo-countries dataset uses ADM0_A3, NOT ISO_A3 — we check both.
    ------------------------------------------------------------------ */
 const GEOJSON_PATH = path.join(__dirname, 'data', 'countries.geojson');
 let countryPolygons = [];
@@ -125,19 +124,13 @@ function loadCountryPolygons() {
             const props = feature.properties;
             const name = props.ADMIN || props.name || props.NAME || null;
 
-            // ISO2 — try every known property name
             const rawIso2 = props.ISO_A2 || props.iso_a2 || props.ISO2 ||
                             props.WB_A2 || props.POSTAL || props.ISO_A2_EH || null;
-            const iso2 = rawIso2 && rawIso2 !== '-99'
-                ? String(rawIso2).toUpperCase()
-                : null;
+            const iso2 = rawIso2 && rawIso2 !== '-99' ? String(rawIso2).toUpperCase() : null;
 
-            // ISO3 — ADM0_A3 is the key field in geo-countries dataset
             const rawIso3 = props.ADM0_A3 || props.SOV_A3 || props.ISO_A3 ||
                             props.iso_a3 || props.ISO3 || props.ADM0_A3_US || null;
-            const iso3 = rawIso3 && rawIso3 !== '-99'
-                ? String(rawIso3).toUpperCase()
-                : null;
+            const iso3 = rawIso3 && rawIso3 !== '-99' ? String(rawIso3).toUpperCase() : null;
 
             if (!name) continue;
 
@@ -157,7 +150,7 @@ function loadCountryPolygons() {
 
 /**
  * Check whether a lat/lon point is inside the given country's real border.
- * Lookup order: ISO3 → ISO2 → country name. Fail-open if nothing matches.
+ * Optimized: checks recently-used countries first.
  */
 function isInsideCountry(lat, lon, iso2, iso3) {
     if (countryPolygons.length === 0) return true;
@@ -167,15 +160,11 @@ function isInsideCountry(lat, lon, iso2, iso3) {
     const iso2u = iso2 ? String(iso2).toUpperCase() : null;
     const iso3u = iso3 ? String(iso3).toUpperCase() : null;
 
-    // 1. ISO3 lookup
     let entry = iso3u ? countryPolygons.find(e => e.iso3 === iso3u) : null;
-
-    // 2. ISO2 lookup
     if (!entry && iso2u) {
         entry = countryPolygons.find(e => e.iso2 === iso2u);
     }
 
-    // 3. Name-based fallback
     if (!entry && iso2u) {
         const countryObj = countriesData.find(c => c.cca2 === iso2u);
         if (countryObj) {
@@ -183,22 +172,16 @@ function isInsideCountry(lat, lon, iso2, iso3) {
             entry = countryPolygons.find(e =>
                 e.name && e.name.toLowerCase() === nameLower
             );
-            if (entry) {
-                console.log(`[geo] matched ${iso2u} by name: "${entry.name}"`);
-            }
         }
     }
 
-    // No polygon → fail open
     if (!entry) {
-        console.warn(`[geo] no polygon for ${iso2u || iso3u} — allowing plane`);
-        return true;
+        return true; // fail open
     }
 
     try {
         return booleanPointInPolygon(pt, entry.geometry);
-    } catch (err) {
-        console.warn(`[geo] PIP failed for ${iso2u}:`, err.message);
+    } catch {
         return true;
     }
 }
@@ -291,7 +274,6 @@ app.get('/api/ping', (req, res) => {
     res.type('text/plain').send('OK');
 });
 
-// Diagnostic: see what ISO codes exist in the loaded GeoJSON
 app.get('/api/geo/countries', (req, res) => {
     const bd = countryPolygons.find(p =>
         p.iso2 === 'BD' || p.iso3 === 'BGD' ||
@@ -490,11 +472,81 @@ app.get('/api/airports/:ident', async (req, res) => {
     }
 });
 
+/* ------------------------------------------------------------------
+   Live planes with cache + neighbor prefetch
+   ------------------------------------------------------------------ */
 let planesCache = {};
-const PLANES_CACHE_DURATION = 60000;
+const PLANES_CACHE_DURATION = 60000; // 60s
 
-app.get('/api/planes/live', async (req, res) => {
-    const country = String(req.query.country || 'BD').toUpperCase();
+// Neighbor map — used to prefetch data for likely-next countries
+const NEIGHBORS = {
+    // South Asia
+    IN: ['PK', 'BD', 'NP', 'LK', 'MM', 'BT'],
+    PK: ['IN', 'AF', 'IR', 'CN'],
+    BD: ['IN', 'MM'],
+    NP: ['IN', 'CN'],
+    LK: ['IN'],
+    BT: ['IN', 'CN'],
+    // North America
+    US: ['CA', 'MX'],
+    CA: ['US'],
+    MX: ['US', 'GT', 'BZ'],
+    // Europe
+    GB: ['IE', 'FR', 'NL', 'BE', 'DE'],
+    FR: ['GB', 'BE', 'DE', 'CH', 'IT', 'ES'],
+    DE: ['FR', 'NL', 'BE', 'DK', 'PL', 'CZ', 'AT', 'CH'],
+    NL: ['GB', 'DE', 'BE'],
+    BE: ['FR', 'NL', 'DE', 'LU'],
+    ES: ['FR', 'PT'],
+    IT: ['FR', 'CH', 'AT', 'SI'],
+    IE: ['GB'],
+    // Middle East
+    AE: ['SA', 'OM', 'QA'],
+    SA: ['AE', 'OM', 'YE', 'JO', 'IQ', 'KW', 'QA'],
+    QA: ['SA', 'AE', 'BH'],
+    KW: ['SA', 'IQ'],
+    OM: ['AE', 'SA', 'YE'],
+    // East Asia
+    CN: ['HK', 'TW', 'KR', 'JP', 'MN', 'IN'],
+    JP: ['KR', 'TW', 'CN'],
+    KR: ['JP', 'CN', 'KP'],
+    TW: ['CN', 'JP', 'PH'],
+    HK: ['CN'],
+    // Southeast Asia
+    TH: ['MM', 'LA', 'KH', 'MY'],
+    MY: ['SG', 'ID', 'TH', 'BN'],
+    SG: ['MY', 'ID'],
+    ID: ['MY', 'SG', 'PG', 'TL', 'PH'],
+    VN: ['CN', 'LA', 'KH', 'TH'],
+    PH: ['TW', 'VN', 'MY', 'ID'],
+    // Oceania
+    AU: ['NZ', 'ID', 'PG'],
+    NZ: ['AU'],
+    // South America
+    BR: ['AR', 'CO', 'PE', 'VE', 'PY', 'UY', 'BO'],
+    AR: ['BR', 'CL', 'UY', 'PY', 'BO'],
+    CL: ['AR', 'PE', 'BO'],
+    CO: ['BR', 'VE', 'EC', 'PE', 'PA'],
+    PE: ['BR', 'CO', 'EC', 'BO', 'CL'],
+    VE: ['BR', 'CO', 'GY'],
+    // Africa
+    ZA: ['BW', 'NA', 'ZW', 'MZ', 'SZ', 'LS'],
+    EG: ['LY', 'SD', 'IL', 'JO'],
+    NG: ['BJ', 'NE', 'TD', 'CM'],
+    KE: ['TZ', 'UG', 'ET', 'SO', 'SS'],
+};
+
+/**
+ * Fetch planes for a country and store in cache. Used by both the API
+ * endpoint AND the neighbor prefetch. Does not respond to any HTTP request.
+ */
+async function fetchAndCachePlanes(country) {
+    // Skip if already fresh in cache
+    const cached = planesCache[country];
+    if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
+        return cached.data;
+    }
+
     let bounds = countryBounds[country];
     let boundsSource = 'country-bounds';
 
@@ -512,11 +564,6 @@ app.get('/api/planes/live', async (req, res) => {
         }
     }
 
-    const now = Date.now();
-    if (planesCache[country] && now - planesCache[country].timestamp < PLANES_CACHE_DURATION) {
-        return res.json(planesCache[country].data);
-    }
-
     const [lamin, lamax, lomin, lomax] = bounds;
     const centerLat = (lamin + lamax) / 2;
     const centerLon = (lomin + lomax) / 2;
@@ -525,60 +572,95 @@ app.get('/api/planes/live', async (req, res) => {
 
     const url = `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`;
 
+    const fetch = (await import('node-fetch')).default;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    let response;
     try {
-        const fetch = (await import('node-fetch')).default;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        response = await fetch(url, {
+            headers: { Accept: 'application/json' },
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
 
-        let response;
-        try {
-            response = await fetch(url, {
-                headers: { Accept: 'application/json' },
-                signal: controller.signal
-            });
-        } finally {
-            clearTimeout(timeoutId);
-        }
+    if (!response.ok) {
+        throw new Error(`adsb.lol HTTP ${response.status}`);
+    }
 
-        if (!response.ok) {
-            if (planesCache[country]) return res.json(planesCache[country].data);
-            return res.status(502).json({
-                error: 'adsb.lol API error',
-                status: response.status,
-                hint: 'Try again soon.'
-            });
-        }
+    const data = await response.json();
+    const rawCount = (data.ac || []).length;
 
-        const data = await response.json();
-        const rawCount = (data.ac || []).length;
+    const planes = (data.ac || [])
+        .filter(a => a.lat != null && a.lon != null)
+        .filter(a => isInsideCountry(a.lat, a.lon, country, null))
+        .map(a => ({
+            icao24: a.hex || 'unknown',
+            callsign: (a.flight || '').trim() || a.r || 'Unknown',
+            origin_country: countryFromHex(a.hex),
+            longitude: a.lon,
+            latitude: a.lat,
+            altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
+            on_ground: a.ground || false,
+            velocity: a.gs ? Math.round(a.gs * 1.852) : 0,
+            heading: a.track ? Math.round(a.track) : 0,
+            vertical_rate: a.baro_rate || 0,
+            geo_altitude: a.alt_geom ? Math.round(a.alt_geom) : 0,
+            squawk: a.squawk || null
+        }));
 
-        // Map + filter by actual country border
-        const planes = (data.ac || [])
-            .filter(a => a.lat != null && a.lon != null)
-            .filter(a => isInsideCountry(a.lat, a.lon, country, null))
-            .map(a => ({
-                icao24: a.hex || 'unknown',
-                callsign: (a.flight || '').trim() || a.r || 'Unknown',
-                origin_country: countryFromHex(a.hex),
-                longitude: a.lon,
-                latitude: a.lat,
-                altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
-                on_ground: a.ground || false,
-                velocity: a.gs ? Math.round(a.gs * 1.852) : 0,
-                heading: a.track ? Math.round(a.track) : 0,
-                vertical_rate: a.baro_rate || 0,
-                geo_altitude: a.alt_geom ? Math.round(a.alt_geom) : 0,
-                squawk: a.squawk || null
-            }));
+    console.log(
+        `[planes] ${country} [${boundsSource}] → raw ${rawCount}, inside borders ${planes.length}`
+    );
 
-        console.log(
-            `[planes] ${country} [${boundsSource}] → raw ${rawCount}, inside borders ${planes.length}`
-        );
+    planesCache[country] = { data: planes, timestamp: Date.now() };
+    return planes;
+}
 
-        planesCache[country] = { data: planes, timestamp: now };
+/**
+ * Background prefetch: fire-and-forget fetch for neighboring countries.
+ */
+function prefetchNeighbors(country) {
+    const neighbors = NEIGHBORS[country];
+    if (!neighbors || neighbors.length === 0) return;
+
+    console.log(`[prefetch] queueing ${neighbors.length} neighbors of ${country}: ${neighbors.join(',')}`);
+
+    // Stagger the requests to avoid hammering ADSB.LOL all at once
+    neighbors.forEach((neighbor, i) => {
+        setTimeout(() => {
+            fetchAndCachePlanes(neighbor)
+                .then(() => console.log(`[prefetch] ✅ ${neighbor} cached`))
+                .catch(err => console.warn(`[prefetch] ❌ ${neighbor}: ${err.message}`));
+        }, 500 + (i * 800)); // 500ms, 1300ms, 2100ms, ... between requests
+    });
+}
+
+app.get('/api/planes/live', async (req, res) => {
+    const country = String(req.query.country || 'BD').toUpperCase();
+
+    // Cache hit?
+    const cached = planesCache[country];
+    if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
+        return res.json(cached.data);
+    }
+
+    try {
+        const planes = await fetchAndCachePlanes(country);
         res.json(planes);
+
+        // ---- Trigger neighbor prefetch AFTER responding ----
+        // This runs in the background and doesn't block the response.
+        setImmediate(() => prefetchNeighbors(country));
+
     } catch (err) {
-        if (planesCache[country]) return res.json(planesCache[country].data);
+        // Fall back to stale cache if available
+        if (planesCache[country]) {
+            console.warn(`[planes] ${country} fetch failed, using stale cache`);
+            return res.json(planesCache[country].data);
+        }
         res.status(502).json({
             error: err.name === 'AbortError' ? 'adsb.lol API timeout' : 'Flight data unavailable',
             hint: 'Try again in a moment.'
@@ -698,6 +780,9 @@ app.get('/api/countries/:code', (req, res) => {
     res.json(found);
 });
 
+/* ------------------------------------------------------------------
+   Self-ping (best-effort keep-alive)
+   ------------------------------------------------------------------ */
 function startSelfPing() {
     const baseUrl =
         process.env.RENDER_EXTERNAL_URL ||
