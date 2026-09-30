@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /app.html
+
+Sitemap: https://skyscope-dgzc.onrender.com/sitemap.xml
