@@ -148,10 +148,6 @@ function loadCountryPolygons() {
     }
 }
 
-/**
- * Check whether a lat/lon point is inside the given country's real border.
- * Optimized: checks recently-used countries first.
- */
 function isInsideCountry(lat, lon, iso2, iso3) {
     if (countryPolygons.length === 0) return true;
     if (lat == null || lon == null) return false;
@@ -176,7 +172,7 @@ function isInsideCountry(lat, lon, iso2, iso3) {
     }
 
     if (!entry) {
-        return true; // fail open
+        return true;
     }
 
     try {
@@ -186,7 +182,6 @@ function isInsideCountry(lat, lon, iso2, iso3) {
     }
 }
 
-// Load polygons at startup
 loadCountryPolygons();
 
 const countriesPath = path.join(__dirname, 'data', 'countries.json');
@@ -259,7 +254,8 @@ app.get('/api/health', async (req, res) => {
             database: 'connected',
             time: new Date().toISOString(),
             countriesLoaded: countriesData.length,
-            countryPolygons: countryPolygons.length
+            countryPolygons: countryPolygons.length,
+            cachedCountries: Object.keys(planesCache).length
         });
     } catch (err) {
         res.status(503).json({
@@ -324,6 +320,16 @@ app.get('/api/planes/debug', (req, res) => {
         polygonsLoaded: countryPolygons.length,
         url: `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`
     });
+});
+
+// === CHANGED: added endpoint to list which countries are currently cached ===
+app.get('/api/planes/cached', (req, res) => {
+    const entries = Object.entries(planesCache).map(([country, v]) => ({
+        country,
+        planes: v.data.length,
+        ageSeconds: Math.round((Date.now() - v.timestamp) / 1000)
+    }));
+    res.json(entries);
 });
 
 app.post('/api/register', authLimiter, async (req, res) => {
@@ -476,72 +482,157 @@ app.get('/api/airports/:ident', async (req, res) => {
    Live planes with cache + neighbor prefetch
    ------------------------------------------------------------------ */
 let planesCache = {};
-const PLANES_CACHE_DURATION = 60000; // 60s
+// === CHANGED: cache duration from 60s to 180s (3 minutes) ===
+const PLANES_CACHE_DURATION = 180000;
 
-// Neighbor map — used to prefetch data for likely-next countries
+// === CHANGED: expanded neighbor map covering more countries ===
 const NEIGHBORS = {
     // South Asia
-    IN: ['PK', 'BD', 'NP', 'LK', 'MM', 'BT'],
-    PK: ['IN', 'AF', 'IR', 'CN'],
+    IN: ['PK', 'BD', 'NP', 'LK', 'MM', 'BT', 'AF'],
+    PK: ['IN', 'AF', 'IR', 'CN', 'TJ'],
     BD: ['IN', 'MM'],
     NP: ['IN', 'CN'],
     LK: ['IN'],
     BT: ['IN', 'CN'],
+    AF: ['PK', 'IR', 'TJ', 'UZ', 'TM', 'CN'],
+    MV: ['LK', 'IN'],
     // North America
-    US: ['CA', 'MX'],
+    US: ['CA', 'MX', 'CU'],
     CA: ['US'],
     MX: ['US', 'GT', 'BZ'],
+    CU: ['US', 'MX', 'JM', 'HT'],
+    JM: ['CU', 'HT'],
+    HT: ['DO', 'CU', 'JM'],
+    DO: ['HT', 'PR'],
+    PR: ['DO', 'VI'],
+    BS: ['US', 'CU'],
     // Europe
     GB: ['IE', 'FR', 'NL', 'BE', 'DE'],
-    FR: ['GB', 'BE', 'DE', 'CH', 'IT', 'ES'],
-    DE: ['FR', 'NL', 'BE', 'DK', 'PL', 'CZ', 'AT', 'CH'],
+    IE: ['GB'],
+    FR: ['GB', 'BE', 'DE', 'CH', 'IT', 'ES', 'LU'],
+    DE: ['FR', 'NL', 'BE', 'DK', 'PL', 'CZ', 'AT', 'CH', 'LU'],
     NL: ['GB', 'DE', 'BE'],
     BE: ['FR', 'NL', 'DE', 'LU'],
-    ES: ['FR', 'PT'],
-    IT: ['FR', 'CH', 'AT', 'SI'],
-    IE: ['GB'],
+    LU: ['BE', 'FR', 'DE'],
+    ES: ['FR', 'PT', 'MA'],
+    PT: ['ES'],
+    IT: ['FR', 'CH', 'AT', 'SI', 'SM', 'VA'],
+    CH: ['FR', 'DE', 'IT', 'AT', 'LI'],
+    AT: ['DE', 'CH', 'IT', 'CZ', 'SK', 'HU', 'SI'],
+    CZ: ['DE', 'AT', 'SK', 'PL'],
+    SK: ['CZ', 'AT', 'HU', 'PL', 'UA'],
+    HU: ['AT', 'SK', 'UA', 'RO', 'RS', 'HR', 'SI'],
+    PL: ['DE', 'CZ', 'SK', 'UA', 'BY', 'LT', 'RU'],
+    DK: ['DE', 'SE', 'NO'],
+    SE: ['DK', 'NO', 'FI'],
+    NO: ['DK', 'SE', 'FI', 'RU'],
+    FI: ['SE', 'NO', 'RU', 'EE'],
+    EE: ['FI', 'LV', 'RU'],
+    LV: ['EE', 'LT', 'BY', 'RU'],
+    LT: ['LV', 'PL', 'BY', 'RU'],
+    BY: ['PL', 'LT', 'LV', 'RU', 'UA'],
+    UA: ['PL', 'SK', 'HU', 'RO', 'MD', 'RU', 'BY'],
+    MD: ['RO', 'UA'],
+    RO: ['HU', 'UA', 'MD', 'BG', 'RS'],
+    BG: ['RO', 'RS', 'MK', 'GR', 'TR'],
+    GR: ['BG', 'MK', 'AL', 'TR'],
+    AL: ['GR', 'MK', 'ME', 'XK'],
+    MK: ['BG', 'GR', 'AL', 'RS', 'XK'],
+    RS: ['HU', 'RO', 'BG', 'MK', 'XK', 'ME', 'BA', 'HR'],
+    ME: ['AL', 'RS', 'BA', 'HR', 'XK'],
+    BA: ['HR', 'RS', 'ME'],
+    HR: ['SI', 'HU', 'RS', 'BA', 'ME'],
+    SI: ['IT', 'AT', 'HR', 'HU'],
     // Middle East
     AE: ['SA', 'OM', 'QA'],
     SA: ['AE', 'OM', 'YE', 'JO', 'IQ', 'KW', 'QA'],
     QA: ['SA', 'AE', 'BH'],
+    BH: ['SA', 'QA'],
     KW: ['SA', 'IQ'],
     OM: ['AE', 'SA', 'YE'],
+    YE: ['SA', 'OM'],
+    JO: ['SA', 'IQ', 'SY', 'IL', 'PS', 'EG'],
+    IL: ['JO', 'LB', 'SY', 'PS', 'EG'],
+    LB: ['SY', 'IL', 'JO'],
+    SY: ['TR', 'IQ', 'JO', 'IL', 'LB'],
+    IQ: ['TR', 'IR', 'KW', 'SA', 'JO', 'SY'],
+    IR: ['IQ', 'TR', 'AM', 'AZ', 'TM', 'AF', 'PK'],
+    TR: ['GR', 'BG', 'GE', 'AM', 'AZ', 'IR', 'IQ', 'SY'],
+    GE: ['RU', 'TR', 'AM', 'AZ'],
+    AM: ['GE', 'TR', 'AZ', 'IR'],
+    AZ: ['GE', 'AM', 'IR', 'RU'],
+    // Central Asia
+    KZ: ['RU', 'CN', 'KG', 'UZ', 'TM'],
+    UZ: ['KZ', 'KG', 'TJ', 'TM', 'AF'],
+    TM: ['KZ', 'UZ', 'AF', 'IR'],
+    KG: ['KZ', 'UZ', 'TJ', 'CN'],
+    TJ: ['UZ', 'KG', 'CN', 'AF'],
     // East Asia
-    CN: ['HK', 'TW', 'KR', 'JP', 'MN', 'IN'],
-    JP: ['KR', 'TW', 'CN'],
+    CN: ['HK', 'TW', 'KR', 'JP', 'MN', 'IN', 'RU', 'KZ', 'KG', 'TJ', 'AF', 'PK', 'NP', 'BT', 'MM', 'LA', 'VN'],
+    JP: ['KR', 'TW', 'CN', 'RU'],
     KR: ['JP', 'CN', 'KP'],
+    KP: ['KR', 'CN', 'RU'],
     TW: ['CN', 'JP', 'PH'],
-    HK: ['CN'],
+    HK: ['CN', 'MO'],
+    MO: ['HK', 'CN'],
+    MN: ['CN', 'RU'],
     // Southeast Asia
     TH: ['MM', 'LA', 'KH', 'MY'],
+    MM: ['IN', 'BD', 'CN', 'LA', 'TH'],
+    LA: ['TH', 'VN', 'KH', 'MM', 'CN'],
+    KH: ['TH', 'LA', 'VN'],
+    VN: ['CN', 'LA', 'KH', 'TH'],
     MY: ['SG', 'ID', 'TH', 'BN'],
     SG: ['MY', 'ID'],
     ID: ['MY', 'SG', 'PG', 'TL', 'PH'],
-    VN: ['CN', 'LA', 'KH', 'TH'],
     PH: ['TW', 'VN', 'MY', 'ID'],
+    BN: ['MY', 'ID'],
+    TL: ['ID'],
     // Oceania
     AU: ['NZ', 'ID', 'PG'],
     NZ: ['AU'],
+    PG: ['ID', 'AU'],
+    FJ: ['NZ', 'AU'],
     // South America
-    BR: ['AR', 'CO', 'PE', 'VE', 'PY', 'UY', 'BO'],
+    BR: ['AR', 'CO', 'PE', 'VE', 'PY', 'UY', 'BO', 'GY', 'SR', 'GF'],
     AR: ['BR', 'CL', 'UY', 'PY', 'BO'],
     CL: ['AR', 'PE', 'BO'],
     CO: ['BR', 'VE', 'EC', 'PE', 'PA'],
     PE: ['BR', 'CO', 'EC', 'BO', 'CL'],
     VE: ['BR', 'CO', 'GY'],
+    EC: ['CO', 'PE'],
+    BO: ['BR', 'AR', 'CL', 'PE', 'PY'],
+    PY: ['BR', 'AR', 'BO'],
+    UY: ['BR', 'AR'],
+    GY: ['BR', 'VE', 'SR'],
+    SR: ['BR', 'GY', 'GF'],
+    GF: ['BR', 'SR', 'GY'],
     // Africa
     ZA: ['BW', 'NA', 'ZW', 'MZ', 'SZ', 'LS'],
     EG: ['LY', 'SD', 'IL', 'JO'],
+    LY: ['EG', 'TN', 'DZ', 'TD', 'NE', 'SD'],
+    TN: ['LY', 'DZ'],
+    DZ: ['TN', 'LY', 'NE', 'ML', 'MR', 'MA'],
+    MA: ['DZ', 'ES', 'PT'],
     NG: ['BJ', 'NE', 'TD', 'CM'],
+    NE: ['NG', 'DZ', 'LY', 'TD', 'ML', 'BF', 'BJ'],
+    TD: ['NG', 'NE', 'LY', 'SD', 'CF', 'CM'],
+    CM: ['NG', 'TD', 'CF', 'CG', 'GQ', 'GA'],
     KE: ['TZ', 'UG', 'ET', 'SO', 'SS'],
+    TZ: ['KE', 'UG', 'RW', 'BI', 'CD', 'ZM', 'MW', 'MZ'],
+    UG: ['KE', 'TZ', 'RW', 'SS', 'CD'],
+    ET: ['KE', 'SO', 'SS', 'SD', 'ER', 'DJ'],
+    SO: ['KE', 'ET', 'DJ'],
+    DJ: ['ET', 'SO', 'ER'],
+    ER: ['ET', 'SD', 'DJ'],
+    SD: ['EG', 'LY', 'TD', 'CF', 'SS', 'ET', 'ER'],
+    SS: ['SD', 'ET', 'KE', 'UG', 'CD', 'CF'],
 };
 
 /**
- * Fetch planes for a country and store in cache. Used by both the API
- * endpoint AND the neighbor prefetch. Does not respond to any HTTP request.
+ * Fetch planes for a country and store in cache.
  */
 async function fetchAndCachePlanes(country) {
-    // Skip if already fresh in cache
     const cached = planesCache[country];
     if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
         return cached.data;
@@ -624,39 +715,53 @@ async function fetchAndCachePlanes(country) {
  */
 function prefetchNeighbors(country) {
     const neighbors = NEIGHBORS[country];
-    if (!neighbors || neighbors.length === 0) return;
+    if (!neighbors || neighbors.length === 0) {
+        console.log(`[prefetch] no neighbors configured for ${country}`);
+        return;
+    }
 
-    console.log(`[prefetch] queueing ${neighbors.length} neighbors of ${country}: ${neighbors.join(',')}`);
+    // Filter out countries already fresh in cache
+    const stale = neighbors.filter(n => {
+        const c = planesCache[n];
+        return !c || (Date.now() - c.timestamp > PLANES_CACHE_DURATION);
+    });
 
-    // Stagger the requests to avoid hammering ADSB.LOL all at once
-    neighbors.forEach((neighbor, i) => {
+    if (stale.length === 0) {
+        console.log(`[prefetch] all neighbors of ${country} already fresh`);
+        return;
+    }
+
+    console.log(`[prefetch] queueing ${stale.length} neighbors of ${country}: ${stale.join(',')}`);
+
+    stale.forEach((neighbor, i) => {
         setTimeout(() => {
             fetchAndCachePlanes(neighbor)
                 .then(() => console.log(`[prefetch] ✅ ${neighbor} cached`))
                 .catch(err => console.warn(`[prefetch] ❌ ${neighbor}: ${err.message}`));
-        }, 500 + (i * 800)); // 500ms, 1300ms, 2100ms, ... between requests
+        }, 500 + (i * 800));
     });
 }
 
 app.get('/api/planes/live', async (req, res) => {
     const country = String(req.query.country || 'BD').toUpperCase();
 
-    // Cache hit?
     const cached = planesCache[country];
     if (cached && Date.now() - cached.timestamp < PLANES_CACHE_DURATION) {
+        // === CHANGED: even on cache hit, still kick off background refresh
+        // so the next visit is fresh without the user waiting ===
+        setImmediate(() => {
+            fetchAndCachePlanes(country)
+                .then(() => prefetchNeighbors(country))
+                .catch(() => {});
+        });
         return res.json(cached.data);
     }
 
     try {
         const planes = await fetchAndCachePlanes(country);
         res.json(planes);
-
-        // ---- Trigger neighbor prefetch AFTER responding ----
-        // This runs in the background and doesn't block the response.
         setImmediate(() => prefetchNeighbors(country));
-
     } catch (err) {
-        // Fall back to stale cache if available
         if (planesCache[country]) {
             console.warn(`[planes] ${country} fetch failed, using stale cache`);
             return res.json(planesCache[country].data);
@@ -790,9 +895,7 @@ function startSelfPing() {
         null;
 
     if (!baseUrl) {
-        console.warn(
-            '[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled.'
-        );
+        console.warn('[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled.');
         return;
     }
 
@@ -806,7 +909,6 @@ function startSelfPing() {
             { timeout: 8000 },
             (res) => {
                 res.resume();
-
                 if (res.statusCode >= 200 && res.statusCode < 300) {
                     if (consecutiveFailures > 0) {
                         console.log(`[keep-alive] recovered after ${consecutiveFailures} failure(s)`);
