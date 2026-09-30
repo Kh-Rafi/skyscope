@@ -1,6 +1,6 @@
 # SkyScope
 
-**Live demo:** https://skyscope-dgzc.onrender.com/api/health
+**Live demo:** https://skyscope-dgzc.onrender.com
 
 SkyScope is a Node.js and Express aviation explorer...
 
