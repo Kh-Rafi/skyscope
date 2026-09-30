@@ -35,9 +35,6 @@ const authLimiter = rateLimit({
 
 /* ------------------------------------------------------------------
    ICAO24 hex prefix → Country of registration
-   Every aircraft transponder has a unique ICAO24 hex address.
-   The first 2 hex chars identify the registration country per ICAO.
-   https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_codes
    ------------------------------------------------------------------ */
 const ICAO_COUNTRY_PREFIXES = {
     A0: 'United States', A1: 'United States', A2: 'United States', A3: 'United States',
@@ -181,6 +178,41 @@ app.get('/api/health', async (req, res) => {
 // Ultra-light ping endpoint for keep-alive services (cron-job.org, UptimeRobot)
 app.get('/api/ping', (req, res) => {
     res.type('text/plain').send('OK');
+});
+
+// Diagnostic: check what bounds are being used for a country
+app.get('/api/planes/debug', (req, res) => {
+    const country = String(req.query.country || 'BD').toUpperCase();
+    let bounds = countryBounds[country];
+    let source = 'country-bounds.js';
+
+    if (!bounds) {
+        const countryObj = countriesData.find(c => c.cca2 === country || c.cca3 === country);
+        if (countryObj && countryObj.latlng && countryObj.latlng.length === 2) {
+            const [lat, lng] = countryObj.latlng;
+            const area = countryObj.area || 100000;
+            const sizeDeg = Math.max(2.5, Math.sqrt(area) / 60);
+            bounds = [lat - sizeDeg, lat + sizeDeg, lng - sizeDeg, lng + sizeDeg];
+            source = 'fallback from countries.json';
+        } else {
+            bounds = [-60, 75, -180, 180];
+            source = 'global fallback';
+        }
+    }
+
+    const [lamin, lamax, lomin, lomax] = bounds;
+    const centerLat = (lamin + lamax) / 2;
+    const centerLon = (lomin + lomax) / 2;
+    const radiusNM = Math.min(1000, Math.max(150, (lamax - lamin) * 60));
+
+    res.json({
+        country,
+        bounds: { lamin, lamax, lomin, lomax },
+        center: { lat: centerLat, lon: centerLon },
+        radiusNM,
+        source,
+        url: `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`
+    });
 });
 
 app.post('/api/register', authLimiter, async (req, res) => {
@@ -335,16 +367,20 @@ const PLANES_CACHE_DURATION = 30000;
 app.get('/api/planes/live', async (req, res) => {
     const country = String(req.query.country || 'BD').toUpperCase();
     let bounds = countryBounds[country];
+    let boundsSource = 'country-bounds';
 
     if (!bounds) {
         const countryObj = countriesData.find(c => c.cca2 === country || c.cca3 === country);
         if (countryObj && countryObj.latlng && countryObj.latlng.length === 2) {
             const [lat, lng] = countryObj.latlng;
             const area = countryObj.area || 100000;
-            const sizeDeg = Math.max(1.5, Math.sqrt(area) / 100);
+            // ---- BIGGER fallback box ----
+            const sizeDeg = Math.min(20, Math.max(2.5, Math.sqrt(area) / 60));
             bounds = [lat - sizeDeg, lat + sizeDeg, lng - sizeDeg, lng + sizeDeg];
+            boundsSource = 'fallback';
         } else {
             bounds = [-60, 75, -180, 180];
+            boundsSource = 'global';
         }
     }
 
@@ -359,10 +395,13 @@ app.get('/api/planes/live', async (req, res) => {
     const [lamin, lamax, lomin, lomax] = bounds;
     const centerLat = (lamin + lamax) / 2;
     const centerLon = (lomin + lomax) / 2;
-    // Convert degrees to nautical miles (1 degree ≈ 60 NM)
-    const radiusNM = Math.min(250, Math.max(100, (lamax - lamin) * 60));
+    // ---- BIGGER radius: min 150 NM, max 1000 NM ----
+    const latSpan = lamax - lamin;
+    const radiusNM = Math.min(1000, Math.max(150, latSpan * 60));
 
     const url = `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`;
+
+    console.log(`[planes] ${country} → bounds[${boundsSource}] center(${centerLat.toFixed(2)},${centerLon.toFixed(2)}) radius=${radiusNM}NM`);
 
     try {
         const fetch = (await import('node-fetch')).default;
@@ -380,6 +419,7 @@ app.get('/api/planes/live', async (req, res) => {
         }
 
         if (!response.ok) {
+            console.warn(`[planes] adsb.lol returned ${response.status} for ${country}`);
             if (planesCache[country]) return res.json(planesCache[country].data);
             return res.status(502).json({
                 error: 'adsb.lol API error',
@@ -390,13 +430,15 @@ app.get('/api/planes/live', async (req, res) => {
 
         const data = await response.json();
 
+        console.log(`[planes] adsb.lol returned ${(data.ac || []).length} raw aircraft for ${country}`);
+
         // Map adsb.lol fields to the format your frontend expects
         const planes = (data.ac || [])
             .filter(a => a.lat != null && a.lon != null)
             .map(a => ({
                 icao24: a.hex || 'unknown',
                 callsign: (a.flight || '').trim() || a.r || 'Unknown',
-                origin_country: countryFromHex(a.hex), // Country from ICAO24 hex prefix
+                origin_country: countryFromHex(a.hex),
                 longitude: a.lon,
                 latitude: a.lat,
                 altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
@@ -408,9 +450,12 @@ app.get('/api/planes/live', async (req, res) => {
                 squawk: a.squawk || null
             }));
 
+        console.log(`[planes] after filter: ${planes.length} planes for ${country}`);
+
         planesCache[country] = { data: planes, timestamp: now };
         res.json(planes);
     } catch (err) {
+        console.error(`[planes] error for ${country}:`, err.message);
         if (planesCache[country]) return res.json(planesCache[country].data);
         res.status(502).json({
             error: err.name === 'AbortError' ? 'adsb.lol API timeout' : 'Flight data unavailable',
@@ -533,9 +578,6 @@ app.get('/api/countries/:code', (req, res) => {
 
 /* ------------------------------------------------------------------
    Self-ping (best-effort keep-alive)
-   IMPORTANT: This does NOT wake a sleeping Render free-tier instance.
-   To truly keep the app warm, use UptimeRobot / cron-job.org / Better
-   Stack pointed at:  <your-url>/api/ping   every 5 minutes.
    ------------------------------------------------------------------ */
 function startSelfPing() {
     const baseUrl =
@@ -545,19 +587,13 @@ function startSelfPing() {
 
     if (!baseUrl) {
         console.warn(
-            '[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled. ' +
-            'Set one of them in Render → Environment to enable it. ' +
-            'NOTE: this still cannot wake a sleeping instance; use UptimeRobot.'
+            '[keep-alive] RENDER_EXTERNAL_URL / SELF_URL not set — self-ping disabled.'
         );
         return;
     }
 
-    // Use the ultra-light /api/ping endpoint (no DB query)
     const pingUrl = `${baseUrl.replace(/\/$/, '')}/api/ping`;
-
-    // 5 minutes: comfortably under Render's 15-minute idle threshold.
     const INTERVAL_MS = 5 * 60 * 1000;
-
     let consecutiveFailures = 0;
 
     const ping = () => {
@@ -569,16 +605,12 @@ function startSelfPing() {
 
                 if (res.statusCode >= 200 && res.statusCode < 300) {
                     if (consecutiveFailures > 0) {
-                        console.log(
-                            `[keep-alive] recovered after ${consecutiveFailures} failure(s)`
-                        );
+                        console.log(`[keep-alive] recovered after ${consecutiveFailures} failure(s)`);
                         consecutiveFailures = 0;
                     }
                 } else {
                     consecutiveFailures++;
-                    console.warn(
-                        `[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`
-                    );
+                    console.warn(`[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`);
                 }
             }
         );
@@ -591,9 +623,7 @@ function startSelfPing() {
 
         req.on('error', (err) => {
             consecutiveFailures++;
-            console.warn(
-                `[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`
-            );
+            console.warn(`[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`);
         });
     };
 
