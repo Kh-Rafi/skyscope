@@ -53,7 +53,6 @@ async function loadCountryData(code) {
   try {
     fitToBounds(code);
 
-    // Fire all three in parallel, but planes handle their own UI state
     await Promise.allSettled([
       fetchAirports(code).then(airports => drawAirports(airports || [])),
       loadPlanes(code),
@@ -71,12 +70,10 @@ async function loadCountryData(code) {
 }
 
 async function fetchAirports(code) {
-  // Cancel any pending airport request
   if (airportsAbortController) airportsAbortController.abort();
   airportsAbortController = new AbortController();
   const myRequestId = ++airportsRequestId;
 
-  // Serve from cache if fresh
   const cached = airportsCache.get(code);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.data;
@@ -87,7 +84,6 @@ async function fetchAirports(code) {
       signal: airportsAbortController.signal
     });
 
-    // Ignore stale responses
     if (myRequestId !== airportsRequestId) return [];
 
     if (!res.ok) return [];
@@ -95,43 +91,40 @@ async function fetchAirports(code) {
     airportsCache.set(code, { data, timestamp: Date.now() });
     return data;
   } catch (err) {
-    if (err.name === 'AbortError') return []; // user switched, ignore
+    if (err.name === 'AbortError') return [];
     console.error('Airports fetch error:', err);
     return [];
   }
 }
 
 async function loadPlanes(code, silent = false) {
-  // ---- 1. Cancel any pending plane request ----
+  // 1. Cancel any pending plane request
   if (planesAbortController) {
     planesAbortController.abort();
   }
   planesAbortController = new AbortController();
   const myRequestId = ++planesRequestId;
 
-  // ---- 2. Instant UI feedback ----
-  // If we have cached planes for this country, show them IMMEDIATELY
+  // 2. Instant UI feedback
   const cached = planesCache.get(code);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     drawPlanes(cached.planes);
     updateStatusUpdated();
   } else {
-    // No cache — clear map and show loading state
     if (!silent) {
-      drawPlanes([]);           // clear old country's planes
-      showPlanesLoading(true);  // spinner in counter
+      drawPlanes([]);
+      showPlanesLoading(true);
     }
   }
 
-  // ---- 3. Fetch fresh data ----
+  // 3. Fetch fresh data
   try {
     const res = await fetch(`${APP_API}/planes/live?country=${code}`, {
       signal: planesAbortController.signal
     });
 
-    // ---- 4. Ignore if a newer request came in ----
     if (myRequestId !== planesRequestId) {
-      return; // stale response, ignore
+      return;
     }
 
     let planes = await res.json();
@@ -142,7 +135,7 @@ async function loadPlanes(code, silent = false) {
       return;
     }
 
-    // ---- 5. Filter to country bounding box ----
+    // 4. Filter to country bounding box
     const bounds = (typeof COUNTRY_BOUNDS !== 'undefined') ? COUNTRY_BOUNDS[code] : null;
     if (bounds && Array.isArray(planes)) {
       const [lamin, lamax, lomin, lomax] = bounds;
@@ -154,17 +147,20 @@ async function loadPlanes(code, silent = false) {
       });
     }
 
-    // ---- 6. Cap plane count for performance ----
+    // 5. Cap plane count — reserve 30 slots for grounded planes
     if (Array.isArray(planes) && planes.length > MAX_PLANES) {
       const flying = planes.filter(p => !p.on_ground);
       const grounded = planes.filter(p => p.on_ground);
-      planes = [...flying.slice(0, MAX_PLANES), ...grounded.slice(0, 20)];
+      const flyingCap = MAX_PLANES - 30;
+      planes = [
+        ...flying.slice(0, flyingCap),
+        ...grounded.slice(0, 30)
+      ];
     }
 
-    // ---- 7. Cache + render ----
+    // 6. Cache + render
     planesCache.set(code, { planes, timestamp: Date.now() });
 
-    // Only render if this is still the current request
     if (myRequestId === planesRequestId) {
       drawPlanes(planes);
       updateStatusUpdated();
@@ -178,14 +174,14 @@ async function loadPlanes(code, silent = false) {
       }
 
       if (!silent) {
-        console.log(`✈️ ${code}: ${planes.length} planes shown`);
+        const groundedCount = planes.filter(p => p.on_ground).length;
+        console.log(`✈️ ${code}: ${planes.length} planes (${groundedCount} on ground)`);
       }
     }
 
   } catch (err) {
-    // ---- 8. Ignore abort errors ----
     if (err.name === 'AbortError') {
-      return; // user switched country — expected
+      return;
     }
     console.error('Planes fetch error:', err);
     if (!silent) showToast('Planes unavailable', 'warning');
@@ -193,7 +189,6 @@ async function loadPlanes(code, silent = false) {
   }
 }
 
-// ---- Loading state helper for the counter ----
 function showPlanesLoading(isLoading) {
   const el = document.getElementById('planeCount');
   const el2 = document.getElementById('statusPlanes');
