@@ -1,10 +1,10 @@
 .app-body {
   height: 100vh;
-  height: 100dvh;                  /* modern: accounts for mobile browser chrome */
+  height: 100dvh;                  
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  min-height: -webkit-fill-available; /* iOS Safari fallback */
+  min-height: -webkit-fill-available; 
 }
 
 
@@ -368,9 +368,7 @@
 }
 
 
-/* ==================================================================
-   STATUS BAR — always visible, even on mobile
-   ================================================================== */
+
 .status-bar {
   background: var(--ink);
   color: var(--off-white);
@@ -510,9 +508,7 @@
 }
 
 
-/* ==================================================================
-   MEDIA QUERIES
-   ================================================================== */
+
 
 @media (max-width: 900px) {
   .app-navbar {
@@ -719,10 +715,7 @@
 }
 
 
-/* ==================================================================
-   ROUTE DIRECTIONS UI
-   Bottom sheet on mobile, side panel on desktop.
-   ================================================================== */
+
 
 .leaflet-popup-content {
   margin: 12px 14px;
