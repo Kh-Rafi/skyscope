@@ -768,11 +768,15 @@ app.get('/api/planes/countries', (req, res) => {
 /* ------------------------------------------------------------------
    Directions proxy — hides ORS API key from the frontend
    Uses the official OpenRouteService API (api.openrouteservice.org)
-   Snaps input coordinates to nearest road before routing.
+
+   3-tier fallback for finding a routable point:
+     1. ORS /snap  → finds nearest road to a coordinate
+     2. Nominatim reverse geocode  → finds nearest address (on a road)
+     3. Use original coordinate (last resort, may fail)
    ------------------------------------------------------------------ */
 const ORS_API_KEY = process.env.ORS_API_KEY;
 
-// --- Snap a coordinate to the nearest road using ORS /snap ---
+// --- Tier 1: Snap coordinate to nearest road using ORS /snap ---
 async function snapToRoad(lat, lon) {
     const fetch = (await import('node-fetch')).default;
     const url = `https://api.openrouteservice.org/v2/snap/driving-car?lat=${lat}&lon=${lon}`;
@@ -790,7 +794,6 @@ async function snapToRoad(lat, lon) {
         if (!res.ok) return null;
 
         const data = await res.json();
-        // ORS returns { locations: [[lon, lat], ...] }
         if (data.locations && data.locations[0]) {
             return { lon: data.locations[0][0], lat: data.locations[0][1] };
         }
@@ -798,6 +801,57 @@ async function snapToRoad(lat, lon) {
     } catch {
         return null;
     }
+}
+
+// --- Tier 2: Nominatim reverse geocode to find a road-adjacent point ---
+async function reverseGeocode(lat, lon) {
+    const fetch = (await import('node-fetch')).default;
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=16&addressdetails=1`;
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+        const res = await fetch(url, {
+            headers: {
+                'User-Agent': 'SkyScope/1.0 (https://github.com/)',
+                'Accept': 'application/json'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return null;
+
+        const data = await res.json();
+        if (data.lat && data.lon) {
+            return { lat: Number(data.lat), lon: Number(data.lon) };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// --- Find a routable point using the fallback chain ---
+async function findRoutablePoint(lat, lon, label) {
+    // Try ORS snap first
+    const snapped = await snapToRoad(lat, lon);
+    if (snapped) {
+        console.log(`[directions] ${label}: ORS snap → (${snapped.lat}, ${snapped.lon})`);
+        return snapped;
+    }
+
+    // Fall back to Nominatim
+    const geo = await reverseGeocode(lat, lon);
+    if (geo) {
+        console.log(`[directions] ${label}: Nominatim → (${geo.lat}, ${geo.lon})`);
+        return geo;
+    }
+
+    // Last resort
+    console.log(`[directions] ${label}: using original (${lat}, ${lon})`);
+    return { lat, lon };
 }
 
 // --- Core routing call ---
@@ -856,23 +910,12 @@ app.get('/api/directions', async (req, res) => {
     }
 
     try {
-        // ---- 1. Snap BOTH endpoints to nearest road ----
-        console.log(`[directions] snapping from (${fromLat}, ${fromLon})`);
-        const snappedFrom = await snapToRoad(fromLat, fromLon);
+        // ---- 1. Find routable points for BOTH endpoints ----
+        console.log(`[directions] resolving from (${fromLat}, ${fromLon})`);
+        const finalFrom = await findRoutablePoint(fromLat, fromLon, 'from');
 
-        console.log(`[directions] snapping to   (${toLat}, ${toLon})`);
-        const snappedTo = await snapToRoad(toLat, toLon);
-
-        // Fall back to original coords if snap failed
-        const finalFrom = snappedFrom || { lat: fromLat, lon: fromLon };
-        const finalTo = snappedTo || { lat: toLat, lon: toLon };
-
-        if (snappedFrom) {
-            console.log(`[directions] from snapped → (${finalFrom.lat}, ${finalFrom.lon})`);
-        }
-        if (snappedTo) {
-            console.log(`[directions] to   snapped → (${finalTo.lat}, ${finalTo.lon})`);
-        }
+        console.log(`[directions] resolving to   (${toLat}, ${toLon})`);
+        const finalTo = await findRoutablePoint(toLat, toLon, 'to');
 
         // ---- 2. Request the route ----
         console.log('[directions] requesting route...');
@@ -906,7 +949,7 @@ app.get('/api/directions', async (req, res) => {
         if (result.status === 404) {
             return res.status(404).json({
                 error: 'No drivable route found',
-                hint: 'The origin or destination is not near a mapped road, or the route crosses water/borders. Try moving to a location with a clear road nearby.',
+                hint: 'The route may cross water, an unmapped border, or a region with no road data.',
                 status: 404
             });
         }
