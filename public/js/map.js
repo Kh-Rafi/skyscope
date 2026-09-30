@@ -1,13 +1,7 @@
-
-
-
-
 const API = '/api';
-
 
 const DEFAULT_CENTER = [23.68, 90.35];
 const DEFAULT_ZOOM = 6;
-
 
 let map = null;
 let airportLayer = null;
@@ -15,7 +9,6 @@ let planeLayer = null;
 let airportMarkers = [];
 let planeMarkers = [];
 let currentBounds = null;
-
 
 function initMap() {
   map = L.map('map', {
@@ -29,7 +22,6 @@ function initMap() {
     attribution: '© OpenStreetMap contributors'
   }).addTo(map);
 
-  
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
   airportLayer = L.layerGroup().addTo(map);
@@ -37,7 +29,6 @@ function initMap() {
 
   return map;
 }
-
 
 function drawAirports(airports) {
   if (!airportLayer) return;
@@ -77,62 +68,76 @@ function drawAirports(airports) {
   updateStatusAirports(airports.length);
 }
 
-
 function drawPlanes(planes) {
   if (!planeLayer) return;
+
+  // Ensure planes is always a valid array
+  if (!Array.isArray(planes)) planes = [];
 
   planeLayer.clearLayers();
   planeMarkers = [];
 
-  planes.forEach(p => {
-    
-    const color = p.on_ground ? '#43a047' : '#e53935';
-
-    const icon = L.divIcon({
-      className: 'plane-icon',
-      html: `
-        <div style="
-          transform: rotate(${p.heading}deg);
-          font-size: 18px;
-          color: ${color};
-          text-shadow: 0 0 3px white;
-          line-height: 1;
-          transition: transform 0.5s ease;
-        ">✈️</div>
-      `,
-      iconSize: [18, 18],
-      iconAnchor: [9, 9]
-    });
-
-    const marker = L.marker([p.latitude, p.longitude], { icon });
-
-    const status = p.on_ground ? '🟢 On Ground' : '🔴 In Flight';
-
-    marker.bindPopup(`
-      <div style="font-size: 13px; line-height: 1.6;">
-        <b>✈️ ${p.callsign}</b><br>
-        <b>Status:</b> ${status}<br>
-        <b>Country:</b> ${p.origin_country}<br>
-        <b>Altitude:</b> ${p.altitude.toLocaleString()} m<br>
-        <b>Speed:</b> ${p.velocity} km/h<br>
-        <b>Heading:</b> ${p.heading}°
-      </div>
-    `);
-
-    marker.addTo(planeLayer);
-    planeMarkers.push(marker);
-  });
-
+  // ---- Update counter FIRST so it can never be out of sync ----
   updateStatusPlanes(planes.length);
-}
 
+  planes.forEach(p => {
+    try {
+      const color = p.on_ground ? '#43a047' : '#e53935';
+      const heading = Number(p.heading) || 0;
+      const altitude = Number(p.altitude) || 0;
+      const velocity = Number(p.velocity) || 0;
+      const lat = Number(p.latitude);
+      const lon = Number(p.longitude);
+
+      // Skip if coordinates are invalid
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const icon = L.divIcon({
+        className: 'plane-icon',
+        html: `
+          <div style="
+            transform: rotate(${heading}deg);
+            font-size: 18px;
+            color: ${color};
+            text-shadow: 0 0 3px white;
+            line-height: 1;
+            transition: transform 0.5s ease;
+          ">✈️</div>
+        `,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9]
+      });
+
+      const marker = L.marker([lat, lon], { icon });
+
+      const status = p.on_ground ? '🟢 On Ground' : '🔴 In Flight';
+      const callsign = p.callsign || 'Unknown';
+      const country = p.origin_country || 'Unknown';
+
+      marker.bindPopup(`
+        <div style="font-size: 13px; line-height: 1.6;">
+          <b>✈️ ${callsign}</b><br>
+          <b>Status:</b> ${status}<br>
+          <b>Country:</b> ${country}<br>
+          <b>Altitude:</b> ${altitude.toLocaleString()} m<br>
+          <b>Speed:</b> ${velocity} km/h<br>
+          <b>Heading:</b> ${heading}°
+        </div>
+      `);
+
+      marker.addTo(planeLayer);
+      planeMarkers.push(marker);
+    } catch (err) {
+      console.warn('Skipping plane due to error:', p && p.callsign, err.message);
+    }
+  });
+}
 
 function fitToBounds(code) {
   if (!map) return;
 
   let bounds = COUNTRY_BOUNDS[code];
 
-  
   if (!bounds && typeof allCountries !== 'undefined') {
     const country = allCountries.find(c => c.cca2 === code);
     if (country && country.latlng && country.latlng.length === 2) {
@@ -144,7 +149,6 @@ function fitToBounds(code) {
   }
 
   if (!bounds) {
-    
     bounds = [-60, 75, -180, 180];
   }
 
@@ -152,12 +156,10 @@ function fitToBounds(code) {
   map.fitBounds([[lamin, lomin], [lamax, lomax]], { padding: [20, 20] });
 }
 
-
 function flyTo(lat, lng, zoom = 12) {
   if (!map) return;
   map.flyTo([lat, lng], zoom, { duration: 1.5 });
 }
-
 
 const COUNTRY_BOUNDS = {
   BD: [20.5, 26.7, 88.0, 92.7],
@@ -199,7 +201,6 @@ const COUNTRY_BOUNDS = {
   KE: [-4.7, 5.0, 33.8, 41.9]
 };
 
-
 function updateStatusPlanes(count) {
   const el = document.getElementById('planeCount');
   const el2 = document.getElementById('statusPlanes');
@@ -224,10 +225,6 @@ function updateStatusCountry(name) {
   const el = document.getElementById('statusCountry');
   if (el) el.textContent = name;
 }
-
-
-
-
 
 function addMapLegend() {
   if (!map) return;
