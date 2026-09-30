@@ -3,18 +3,52 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SkyScope · Explore Global Airspace</title>
+
+  <!-- ============ PRIMARY SEO ============ -->
+  <title>SkyScope · Live Flight Tracker & Global Airport Explorer</title>
+  <meta name="description" content="SkyScope — Track live aircraft worldwide, explore 86,000+ airports, and discover real-time country insights. Your window into global airspace." />
+  <meta name="keywords" content="live flight tracker, aircraft tracking, airport finder, aviation news, flight radar, global airspace, SkyScope" />
+  <meta name="author" content="SkyScope" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://skyscope-dgzc.onrender.com/" />
+
+  <!-- ============ GOOGLE SEARCH CONSOLE VERIFICATION ============ -->
+  <!-- Replace the content value below with the code Google gives you -->
+  <meta name="google-site-verification" content="REPLACE_WITH_YOUR_GOOGLE_VERIFICATION_CODE" />
+
+  <!-- ============ OPEN GRAPH (Facebook, LinkedIn, WhatsApp) ============ -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://skyscope-dgzc.onrender.com/" />
+  <meta property="og:title" content="SkyScope · Explore Global Airspace" />
+  <meta property="og:description" content="Live aircraft tracking, 86,000+ airports, and real-time country insights." />
+  <meta property="og:image" content="https://skyscope-dgzc.onrender.com/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:site_name" content="SkyScope" />
+  <meta property="og:locale" content="en_US" />
+
+  <!-- ============ TWITTER CARD ============ -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="SkyScope · Explore Global Airspace" />
+  <meta name="twitter:description" content="Live aircraft tracking, 86,000+ airports, and real-time country insights." />
+  <meta name="twitter:image" content="https://skyscope-dgzc.onrender.com/og-image.png" />
+
+  <!-- ============ FAVICON ============ -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+
+  <!-- ============ FONTS ============ -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- ============ STYLES ============ -->
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
 
   <div class="auth-page">
 
-    
+    <!-- Left visual side -->
     <div class="auth-visual">
       <div class="auth-visual-content">
         <span class="auth-logo">✈️</span>
@@ -29,20 +63,20 @@
       </div>
     </div>
 
-    
+    <!-- Right form side -->
     <div class="auth-form-side">
       <div class="auth-card">
 
         <h2>Welcome back</h2>
         <p class="subtitle">Sign in to continue exploring</p>
 
-        
+        <!-- Tabs -->
         <div class="auth-tabs">
           <button id="tabLogin" class="auth-tab active" type="button">Login</button>
           <button id="tabRegister" class="auth-tab" type="button">Register</button>
         </div>
 
-        
+        <!-- Login form -->
         <form id="loginForm">
           <div class="form-group">
             <label for="loginEmail">Email</label>
@@ -56,7 +90,7 @@
           <div id="loginMsg" class="auth-message"></div>
         </form>
 
-        
+        <!-- Register form -->
         <form id="registerForm" class="hidden">
           <div class="form-group">
             <label for="regName">Full Name</label>
