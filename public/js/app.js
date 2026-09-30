@@ -1,8 +1,3 @@
-
-
-
-
-
 const currentUser = JSON.parse(localStorage.getItem('user') || 'null');
 if (!currentUser) {
   window.location.href = 'index.html';
@@ -23,26 +18,26 @@ let planesInterval = null;
 async function initApp() {
   console.log('🚀 Initializing SkyScope...');
 
- 
+
 initMap();
 
 
 if (typeof addMapLegend === 'function') addMapLegend();
 
-  
+
   setTimeout(() => {
     const loader = document.getElementById('mapLoading');
     if (loader) loader.classList.add('hidden');
   }, 400);
 
-  
+
   const initialCountry = await loadCountries();
   currentCountry = initialCountry || 'BD';
 
-  
+
   loadCountryData(currentCountry);
 
-  
+
   planesInterval = setInterval(() => {
     if (!document.hidden && !HEAVY_COUNTRIES.includes(currentCountry)) {
       loadPlanes(currentCountry, true);
@@ -55,7 +50,7 @@ if (typeof addMapLegend === 'function') addMapLegend();
 
 async function loadCountryData(code) {
   try {
-    
+
     fitToBounds(code);
 
     await Promise.allSettled([
@@ -97,7 +92,19 @@ async function loadPlanes(code, silent = false) {
       return;
     }
 
-    
+    // ---- NEW: filter planes to the selected country's bounding box ----
+    const bounds = (typeof COUNTRY_BOUNDS !== 'undefined') ? COUNTRY_BOUNDS[code] : null;
+    if (bounds && Array.isArray(planes)) {
+      const [lamin, lamax, lomin, lomax] = bounds;
+      planes = planes.filter(p =>
+        Number.isFinite(p.latitude) && Number.isFinite(p.longitude) &&
+        p.latitude >= lamin && p.latitude <= lamax &&
+        p.longitude >= lomin && p.longitude <= lomax
+      );
+    }
+    // --------------------------------------------------------------------
+
+
     if (Array.isArray(planes) && planes.length > MAX_PLANES) {
       const flying = planes.filter(p => !p.on_ground);
       const grounded = planes.filter(p => p.on_ground);
