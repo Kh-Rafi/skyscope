@@ -92,18 +92,20 @@ async function loadPlanes(code, silent = false) {
       return;
     }
 
-    // ---- NEW: filter planes to the selected country's bounding box ----
+    const originalCount = Array.isArray(planes) ? planes.length : 0;
+
+    // ---- Filter planes to the selected country's bounding box ----
     const bounds = (typeof COUNTRY_BOUNDS !== 'undefined') ? COUNTRY_BOUNDS[code] : null;
     if (bounds && Array.isArray(planes)) {
       const [lamin, lamax, lomin, lomax] = bounds;
-      planes = planes.filter(p =>
-        Number.isFinite(p.latitude) && Number.isFinite(p.longitude) &&
-        p.latitude >= lamin && p.latitude <= lamax &&
-        p.longitude >= lomin && p.longitude <= lomax
-      );
+      planes = planes.filter(p => {
+        const lat = Number(p.latitude);
+        const lon = Number(p.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+        return lat >= lamin && lat <= lamax && lon >= lomin && lon <= lomax;
+      });
     }
-    // --------------------------------------------------------------------
-
+    // ---------------------------------------------------------------
 
     if (Array.isArray(planes) && planes.length > MAX_PLANES) {
       const flying = planes.filter(p => !p.on_ground);
@@ -114,7 +116,18 @@ async function loadPlanes(code, silent = false) {
     drawPlanes(planes);
     updateStatusUpdated();
 
-    if (!silent) console.log(`✈️ ${code}: ${planes.length} planes shown (of original)`);
+    // ---- Friendly message when no planes are over the selected country ----
+    if (planes.length === 0 && !silent) {
+      const countryName = (typeof allCountries !== 'undefined')
+        ? (allCountries.find(c => c.cca2 === code)?.name?.common || code)
+        : code;
+      showToast(`✈️ No aircraft currently over ${countryName}. Try a busier country like India, USA, or UAE.`, 'info');
+    }
+    // ----------------------------------------------------------------------
+
+    if (!silent) {
+      console.log(`✈️ ${code}: showing ${planes.length} of ${originalCount} planes from API`);
+    }
 
   } catch (err) {
     console.error('Planes fetch error:', err);
