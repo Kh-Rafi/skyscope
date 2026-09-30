@@ -1,12 +1,6 @@
 /* ==========================================================================
    route.js — Draw a driving route from user's location to a destination airport
    Uses OpenRouteService via our own /api/directions proxy
-
-   Features:
-   - Live-updating route as the user moves toward the airport
-   - Country restriction (airport must be in the currently selected country)
-   - Fixed Done button (closes sheet, keeps route on map)
-   - Clear Route button (removes everything from map)
    ========================================================================== */
 
 let routeLine = null;         // Leaflet polyline
@@ -16,12 +10,68 @@ let currentRoute = null;      // last fetched route data
 let lastDirectionsCall = 0;   // cooldown tracking
 
 // Live-tracking state
-let currentAirport = null;    // airport the user is navigating to
-let currentWatchId = null;    // geolocation watchPosition ID
-let lastRouteFetchPos = null; // last position at which we fetched a route
-const ROUTE_REFRESH_METERS = 500; // re-fetch route every 500m of movement
+let currentAirport = null;
+let currentWatchId = null;
+let lastRouteFetchPos = null;
+const ROUTE_REFRESH_METERS = 500;
 
 const DIRECTIONS_COOLDOWN_MS = 3000;
+
+// ---------- Region lookup: what region is each country in? ----------
+// Used to block cross-continent routes (you can't drive from Asia to Africa)
+const COUNTRY_REGION = {
+  // South Asia
+  BD: 'Asia', IN: 'Asia', PK: 'Asia', NP: 'Asia', LK: 'Asia', BT: 'Asia',
+  AF: 'Asia', MV: 'Asia',
+  // East Asia
+  CN: 'Asia', JP: 'Asia', KR: 'Asia', KP: 'Asia', TW: 'Asia', HK: 'Asia',
+  MO: 'Asia', MN: 'Asia',
+  // Southeast Asia
+  TH: 'Asia', MM: 'Asia', LA: 'Asia', KH: 'Asia', VN: 'Asia', MY: 'Asia',
+  SG: 'Asia', ID: 'Asia', PH: 'Asia', BN: 'Asia', TL: 'Asia',
+  // Central Asia
+  KZ: 'Asia', UZ: 'Asia', TM: 'Asia', KG: 'Asia', TJ: 'Asia',
+  // Middle East
+  AE: 'Asia', SA: 'Asia', QA: 'Asia', BH: 'Asia', KW: 'Asia', OM: 'Asia',
+  YE: 'Asia', JO: 'Asia', IL: 'Asia', LB: 'Asia', SY: 'Asia', IQ: 'Asia',
+  IR: 'Asia', TR: 'Asia', GE: 'Asia', AM: 'Asia', AZ: 'Asia',
+  // Europe
+  GB: 'Europe', IE: 'Europe', FR: 'Europe', DE: 'Europe', NL: 'Europe',
+  BE: 'Europe', LU: 'Europe', ES: 'Europe', PT: 'Europe', IT: 'Europe',
+  CH: 'Europe', AT: 'Europe', CZ: 'Europe', SK: 'Europe', HU: 'Europe',
+  PL: 'Europe', DK: 'Europe', SE: 'Europe', NO: 'Europe', FI: 'Europe',
+  EE: 'Europe', LV: 'Europe', LT: 'Europe', BY: 'Europe', UA: 'Europe',
+  MD: 'Europe', RO: 'Europe', BG: 'Europe', GR: 'Europe', AL: 'Europe',
+  MK: 'Europe', RS: 'Europe', ME: 'Europe', BA: 'Europe', HR: 'Europe',
+  SI: 'Europe', RU: 'Europe', IS: 'Europe',
+  // North America
+  US: 'North America', CA: 'North America', MX: 'North America',
+  CU: 'North America', JM: 'North America', HT: 'North America',
+  DO: 'North America', PR: 'North America', BS: 'North America',
+  GT: 'North America', BZ: 'North America', SV: 'North America',
+  HN: 'North America', NI: 'North America', CR: 'North America',
+  PA: 'North America',
+  // South America
+  BR: 'South America', AR: 'South America', CL: 'South America',
+  CO: 'South America', PE: 'South America', VE: 'South America',
+  EC: 'South America', BO: 'South America', PY: 'South America',
+  UY: 'South America', GY: 'South America', SR: 'South America',
+  GF: 'South America',
+  // Africa
+  DZ: 'Africa', MA: 'Africa', TN: 'Africa', LY: 'Africa', EG: 'Africa',
+  SD: 'Africa', SS: 'Africa', ET: 'Africa', ER: 'Africa', DJ: 'Africa',
+  SO: 'Africa', KE: 'Africa', UG: 'Africa', TZ: 'Africa', RW: 'Africa',
+  BI: 'Africa', CD: 'Africa', CG: 'Africa', CF: 'Africa', CM: 'Africa',
+  TD: 'Africa', NE: 'Africa', NG: 'Africa', BJ: 'Africa', TG: 'Africa',
+  GH: 'Africa', CI: 'Africa', LR: 'Africa', SL: 'Africa', GN: 'Africa',
+  GW: 'Africa', SN: 'Africa', GM: 'Africa', MR: 'Africa', ML: 'Africa',
+  BF: 'Africa', ZA: 'Africa', NA: 'Africa', BW: 'Africa', ZW: 'Africa',
+  MZ: 'Africa', MW: 'Africa', ZM: 'Africa', AO: 'Africa', MG: 'Africa',
+  MU: 'Africa', SC: 'Africa', KM: 'Africa', GA: 'Africa', GQ: 'Africa',
+  // Oceania
+  AU: 'Oceania', NZ: 'Oceania', PG: 'Oceania', FJ: 'Oceania',
+  SB: 'Oceania', VU: 'Oceania', NC: 'Oceania', PF: 'Oceania',
+};
 
 // ---------- Public: called from airport popup ----------
 async function getDirectionsTo(airport) {
@@ -30,17 +80,30 @@ async function getDirectionsTo(airport) {
     return;
   }
 
-  // Enforce country restriction — airport must be in currently selected country
+  // ---- Country mismatch check (BLOCKING, before anything else) ----
   if (airport.iso_country && currentCountry && airport.iso_country !== currentCountry) {
+    const airportCountry = airport.iso_country;
     showToast(
-      `✈️ Directions only available within ${currentCountry}. Switch country to ${airport.iso_country} first.`,
+      `✈️ Directions only work within ${currentCountry}. This airport is in ${airportCountry}. Please switch country first.`,
       'warning',
-      6000
+      7000
     );
     return;
   }
 
-  // Cooldown — prevent spam clicking
+  // ---- Cross-continent check (you can't drive from Asia to Africa) ----
+  const myRegion = COUNTRY_REGION[currentCountry];
+  const theirRegion = COUNTRY_REGION[airport.iso_country];
+  if (myRegion && theirRegion && myRegion !== theirRegion) {
+    showToast(
+      `🌍 No driving route from ${myRegion} to ${theirRegion}. Pick an airport on the same continent.`,
+      'warning',
+      7000
+    );
+    return;
+  }
+
+  // Cooldown
   const now = Date.now();
   if (now - lastDirectionsCall < DIRECTIONS_COOLDOWN_MS) {
     showToast('Please wait a moment before requesting another route.', 'warning');
@@ -75,7 +138,6 @@ async function getDirectionsTo(airport) {
 
     await fetchAndDrawRoute(fromLat, fromLon, airport);
 
-    // Start live tracking so distance updates as user moves
     startLiveTracking(airport);
 
   } catch (err) {
@@ -140,18 +202,15 @@ async function fetchAndDrawRoute(fromLat, fromLon, airport) {
   return data;
 }
 
-// ---------- Internal: live tracking while user drives ----------
+// ---------- Internal: live tracking ----------
 function startLiveTracking(airport) {
   if (!navigator.geolocation) return;
 
   currentWatchId = navigator.geolocation.watchPosition(
     async (pos) => {
       const { latitude, longitude } = pos.coords;
-
-      // Skip if no airport is being tracked
       if (!currentAirport) return;
 
-      // Check how far we've moved since last fetch
       if (lastRouteFetchPos) {
         const movedMeters = haversineMeters(
           lastRouteFetchPos.lat,
@@ -174,11 +233,7 @@ function startLiveTracking(airport) {
     (err) => {
       console.warn('[route] watch error:', err.message);
     },
-    {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 5000
-    }
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
   );
 }
 
@@ -189,7 +244,7 @@ function stopLiveTracking() {
   }
 }
 
-// Distance between two lat/lon points in meters (Haversine)
+// Haversine distance
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -221,12 +276,10 @@ function getCurrentPosition() {
 function drawRouteOnMap(from, to, geometry, airportName) {
   if (!map) return;
 
-  // Remove old line + markers, but keep currentAirport / tracking intact
   if (routeLine && map) { map.removeLayer(routeLine); routeLine = null; }
   if (routeStartMarker && map) { map.removeLayer(routeStartMarker); routeStartMarker = null; }
   if (routeEndMarker && map) { map.removeLayer(routeEndMarker); routeEndMarker = null; }
 
-  // "You are here" blue marker
   routeStartMarker = L.circleMarker([from.lat, from.lon], {
     radius: 9,
     color: '#1e88e5',
@@ -236,7 +289,6 @@ function drawRouteOnMap(from, to, geometry, airportName) {
   }).addTo(map);
   routeStartMarker.bindPopup('<b>📍 You are here</b>');
 
-  // Destination marker (red pin)
   routeEndMarker = L.circleMarker([to.lat, to.lon], {
     radius: 9,
     color: '#e53935',
@@ -246,7 +298,6 @@ function drawRouteOnMap(from, to, geometry, airportName) {
   }).addTo(map);
   routeEndMarker.bindPopup(`<b>🛬 ${airportName}</b>`);
 
-  // Route line — Leaflet accepts GeoJSON directly
   routeLine = L.geoJSON(geometry, {
     style: {
       color: '#1e88e5',
@@ -258,12 +309,11 @@ function drawRouteOnMap(from, to, geometry, airportName) {
     }
   }).addTo(map);
 
-  // Zoom map to fit both markers + route
   const group = L.featureGroup([routeStartMarker, routeEndMarker, routeLine]);
   map.fitBounds(group.getBounds(), { padding: [60, 60] });
 }
 
-// ---------- Bottom sheet / side panel ----------
+// ---------- Bottom sheet ----------
 function showRouteSheet(payload) {
   const sheet = document.getElementById('routeSheet');
   if (!sheet) return;
@@ -278,7 +328,6 @@ function showRouteSheet(payload) {
   const body = sheet.querySelector('.route-sheet-body');
   const actions = sheet.querySelector('.route-sheet-actions');
 
-  // Header
   if (payload.destination) {
     header.innerHTML = `
       <div class="route-sheet-handle"></div>
@@ -292,7 +341,6 @@ function showRouteSheet(payload) {
     `;
   }
 
-  // Body
   if (payload.state === 'loading') {
     body.innerHTML = `
       <div class="route-loading">
@@ -335,7 +383,6 @@ function showRouteSheet(payload) {
     `;
   }
 
-  // ---- Wire up buttons safely ----
   const closeX = document.getElementById('routeSheetX');
   if (closeX) {
     closeX.addEventListener('click', (e) => {
@@ -360,7 +407,6 @@ function showRouteSheet(payload) {
     doneBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // Done = close the sheet but keep route + live tracking active
       closeRouteSheet();
     });
   }
@@ -376,12 +422,10 @@ function closeRouteSheet() {
   if (backdrop) backdrop.classList.remove('show');
 }
 
-// ---------- Delegated: close sheet when backdrop is clicked ----------
 document.addEventListener('click', (e) => {
   if (e.target.id === 'routeBackdrop') closeRouteSheet();
 });
 
-// ---------- Fallback escapeHtml (in case app.js hasn't loaded yet) ----------
 if (typeof window.escapeHtml !== 'function') {
   window.escapeHtml = function (str) {
     if (!str) return '';
