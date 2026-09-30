@@ -675,3 +675,302 @@
   from { transform: translateX(0);     opacity: 1; }
   to   { transform: translateX(400px); opacity: 0; }
 }
+
+
+/* ==================================================================
+   ROUTE DIRECTIONS UI (NEW)
+   Bottom sheet on mobile, side panel on desktop.
+   ================================================================== */
+
+/* ---- Small tweak so Leaflet popup content wraps nicely with the button ---- */
+.leaflet-popup-content {
+  margin: 12px 14px;
+}
+
+.get-directions-btn {
+  font-family: inherit;
+  outline: none;
+}
+
+.get-directions-btn:active {
+  transform: scale(0.98);
+}
+
+/* ---- Backdrop: dims the map behind the sheet on mobile ---- */
+.route-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.35);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 1400;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.route-backdrop.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ---- The route sheet itself (default = desktop side panel) ---- */
+.route-sheet {
+  position: fixed;
+  top: 50%;
+  right: 20px;
+  transform: translate(120%, -50%);
+  width: 380px;
+  max-width: calc(100% - 40px);
+  max-height: calc(100vh - 120px);
+  background: white;
+  border-radius: 18px;
+  box-shadow: 0 20px 60px rgba(26, 26, 26, 0.25);
+  z-index: 1500;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.route-sheet.open {
+  transform: translate(0, -50%);
+}
+
+/* ---- Header ---- */
+.route-sheet-header {
+  position: relative;
+  padding: 20px 20px 16px;
+  background: linear-gradient(135deg, var(--ink) 0%, var(--ink-soft) 100%);
+  color: var(--off-white);
+  border-radius: 18px 18px 0 0;
+  flex-shrink: 0;
+}
+
+.route-sheet-handle {
+  display: none; /* only shown on mobile */
+  width: 44px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  margin: -6px auto 12px;
+}
+
+.route-sheet-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: var(--off-white);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.route-sheet-close:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.route-sheet-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  letter-spacing: -0.2px;
+  padding-right: 34px;
+  line-height: 1.3;
+}
+
+.route-sheet-subtitle {
+  font-size: 12px;
+  color: var(--peach);
+  opacity: 0.95;
+  font-weight: 500;
+}
+
+/* ---- Body ---- */
+.route-sheet-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* ---- Loading state ---- */
+.route-loading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  font-size: 14px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.route-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--peach-light);
+  border-top-color: var(--peach);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ---- Ready state: distance / ETA stats ---- */
+.route-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.route-stat {
+  padding: 16px 14px;
+  background: var(--off-white);
+  border-radius: 12px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.route-stat-icon {
+  font-size: 22px;
+  margin-bottom: 6px;
+  line-height: 1;
+}
+
+.route-stat-value {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: -0.4px;
+  line-height: 1.1;
+  margin-bottom: 4px;
+}
+
+.route-stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* ---- Error state ---- */
+.route-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: #fff5f5;
+  border: 1px solid #ffcdd2;
+  border-radius: 12px;
+  font-size: 14px;
+  color: #c62828;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.route-error-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+/* ---- Actions row ---- */
+.route-sheet-actions {
+  padding: 14px 20px 18px;
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  background: white;
+  flex-shrink: 0;
+}
+
+.route-sheet-actions:empty {
+  display: none;
+}
+
+.route-btn-primary,
+.route-btn-secondary {
+  flex: 1;
+  padding: 11px 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+
+.route-btn-primary {
+  background: var(--ink);
+  color: var(--off-white);
+}
+
+.route-btn-primary:hover {
+  background: var(--ink-soft);
+}
+
+.route-btn-secondary {
+  background: var(--off-white);
+  color: var(--ink);
+  border: 1.5px solid var(--border);
+}
+
+.route-btn-secondary:hover {
+  background: var(--peach-light);
+  border-color: var(--peach);
+}
+
+/* ==================================================================
+   MOBILE: transform the side panel into a bottom sheet
+   ================================================================== */
+@media (max-width: 700px) {
+  .route-sheet {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 75vh;
+    border-radius: 20px 20px 0 0;
+    transform: translateY(110%);
+  }
+
+  .route-sheet.open {
+    transform: translateY(0);
+  }
+
+  .route-sheet-header {
+    border-radius: 20px 20px 0 0;
+    padding-top: 12px;
+  }
+
+  .route-sheet-handle {
+    display: block;
+  }
+
+  .route-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Very small screens */
+@media (max-width: 380px) {
+  .route-stat-value {
+    font-size: 18px;
+  }
+  .route-btn-primary,
+  .route-btn-secondary {
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+}
