@@ -305,6 +305,9 @@ countrySelectEl.addEventListener('change', async (e) => {
   airportMarkers = [];
   planeMarkers = [];
 
+  // ---- NEW: clear any active driving route when switching countries ----
+  if (typeof clearRoute === 'function') clearRoute();
+
   await loadCountryData(code);
 
   const country = allCountries.find(c => c.cca2 === code);
