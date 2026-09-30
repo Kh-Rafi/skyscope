@@ -76,8 +76,15 @@ function drawPlanes(planes) {
   planeLayer.clearLayers();
   planeMarkers = [];
 
-  // Update counter first so it's never out of sync
-  updateStatusPlanes(planes.length);
+  // ---- Count grounded vs flying ----
+  const groundedCount = planes.filter(p => p.on_ground === true).length;
+
+  // ---- Update counters (both total and grounded) ----
+  if (typeof updatePlaneCounter === 'function') {
+    updatePlaneCounter(planes.length, groundedCount);
+  } else {
+    updateStatusPlanes(planes.length);
+  }
 
   planes.forEach(p => {
     try {
@@ -89,7 +96,6 @@ function drawPlanes(planes) {
 
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-      // ---- Different visual for grounded vs flying planes ----
       const isGrounded = p.on_ground === true;
       const color = isGrounded ? '#43a047' : '#e53935';
       const iconEmoji = isGrounded ? '🛬' : '✈️';
