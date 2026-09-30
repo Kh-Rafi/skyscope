@@ -52,12 +52,39 @@ function drawAirports(airports) {
       weight: 1.5
     });
 
+    // ---- UPDATED POPUP WITH "GET DIRECTIONS" BUTTON ----
     marker.bindPopup(`
-      <div style="font-size: 13px; line-height: 1.5;">
+      <div style="font-size: 13px; line-height: 1.5; min-width: 180px;">
         <b>🏢 ${a.name}</b><br>
         <span style="color: #8a8478;">${a.municipality || 'Unknown city'}</span><br>
         <b>IATA:</b> ${a.iata_code || 'N/A'}<br>
         <b>Type:</b> ${(a.type || '').replace(/_/g, ' ')}
+        <div style="margin-top: 10px;">
+          <button 
+            class="get-directions-btn" 
+            data-ident="${a.ident}"
+            style="
+              width: 100%;
+              padding: 8px 12px;
+              background: #1e88e5;
+              color: white;
+              border: none;
+              border-radius: 8px;
+              font-size: 13px;
+              font-weight: 600;
+              cursor: pointer;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 6px;
+              transition: background 0.2s;
+            "
+            onmouseover="this.style.background='#1565c0'"
+            onmouseout="this.style.background='#1e88e5'"
+          >
+            🚗 Get Directions
+          </button>
+        </div>
       </div>
     `);
 
@@ -67,6 +94,25 @@ function drawAirports(airports) {
 
   updateStatusAirports(airports.length);
 }
+
+// ---- DELEGATED EVENT LISTENER FOR "GET DIRECTIONS" BUTTON ----
+// This listens for clicks on the button inside any airport popup.
+// It finds the airport data from the marker and calls getDirectionsTo().
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.get-directions-btn');
+  if (!btn) return;
+
+  const ident = btn.dataset.ident;
+  if (!ident) return;
+
+  // Find the airport object in the global airportMarkers array
+  const found = airportMarkers.find(m => m.data && m.data.ident === ident);
+  if (found && typeof getDirectionsTo === 'function') {
+    getDirectionsTo(found.data);
+  } else {
+    console.warn('[map] Could not find airport data for directions:', ident);
+  }
+});
 
 function drawPlanes(planes) {
   if (!planeLayer) return;
