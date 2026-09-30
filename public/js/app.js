@@ -5,38 +5,40 @@ if (!currentUser) {
 
 const APP_API = '/api';
 
-
 const MAX_PLANES = 100;
 const MAX_AIRPORTS = 150;
 const HEAVY_COUNTRIES = ['US', 'CN', 'IN', 'RU', 'BR', 'AU', 'CA', 'MX'];
 
-
 let currentCountry = 'BD';
 let planesInterval = null;
 
+// ---- Request tracking (fixes race conditions) ----
+let planesAbortController = null;
+let airportsAbortController = null;
+let planesRequestId = 0;
+let airportsRequestId = 0;
+
+// ---- Client-side cache (instant country switch feel) ----
+const planesCache = new Map();   // country -> { planes, timestamp }
+const airportsCache = new Map(); // country -> airports
+const CACHE_TTL = 60 * 1000;     // 60 seconds
 
 async function initApp() {
   console.log('🚀 Initializing SkyScope...');
 
+  initMap();
 
-initMap();
-
-
-if (typeof addMapLegend === 'function') addMapLegend();
-
+  if (typeof addMapLegend === 'function') addMapLegend();
 
   setTimeout(() => {
     const loader = document.getElementById('mapLoading');
     if (loader) loader.classList.add('hidden');
   }, 400);
 
-
   const initialCountry = await loadCountries();
   currentCountry = initialCountry || 'BD';
 
-
   loadCountryData(currentCountry);
-
 
   planesInterval = setInterval(() => {
     if (!document.hidden && !HEAVY_COUNTRIES.includes(currentCountry)) {
@@ -47,12 +49,11 @@ if (typeof addMapLegend === 'function') addMapLegend();
   console.log('✅ SkyScope ready');
 }
 
-
 async function loadCountryData(code) {
   try {
-
     fitToBounds(code);
 
+    // Fire all three in parallel, but planes handle their own UI state
     await Promise.allSettled([
       fetchAirports(code).then(airports => drawAirports(airports || [])),
       loadPlanes(code),
@@ -69,32 +70,79 @@ async function loadCountryData(code) {
   }
 }
 
-
 async function fetchAirports(code) {
+  // Cancel any pending airport request
+  if (airportsAbortController) airportsAbortController.abort();
+  airportsAbortController = new AbortController();
+  const myRequestId = ++airportsRequestId;
+
+  // Serve from cache if fresh
+  const cached = airportsCache.get(code);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.data;
+  }
+
   try {
-    const res = await fetch(`${APP_API}/airports?country=${code}&limit=${MAX_AIRPORTS}`);
+    const res = await fetch(`${APP_API}/airports?country=${code}&limit=${MAX_AIRPORTS}`, {
+      signal: airportsAbortController.signal
+    });
+
+    // Ignore stale responses
+    if (myRequestId !== airportsRequestId) return [];
+
     if (!res.ok) return [];
-    return await res.json();
+    const data = await res.json();
+    airportsCache.set(code, { data, timestamp: Date.now() });
+    return data;
   } catch (err) {
+    if (err.name === 'AbortError') return []; // user switched, ignore
     console.error('Airports fetch error:', err);
     return [];
   }
 }
 
-
 async function loadPlanes(code, silent = false) {
+  // ---- 1. Cancel any pending plane request ----
+  if (planesAbortController) {
+    planesAbortController.abort();
+  }
+  planesAbortController = new AbortController();
+  const myRequestId = ++planesRequestId;
+
+  // ---- 2. Instant UI feedback ----
+  // If we have cached planes for this country, show them IMMEDIATELY
+  const cached = planesCache.get(code);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    drawPlanes(cached.planes);
+    updateStatusUpdated();
+  } else {
+    // No cache — clear map and show loading state
+    if (!silent) {
+      drawPlanes([]);           // clear old country's planes
+      showPlanesLoading(true);  // spinner in counter
+    }
+  }
+
+  // ---- 3. Fetch fresh data ----
   try {
-    const res = await fetch(`${APP_API}/planes/live?country=${code}`);
+    const res = await fetch(`${APP_API}/planes/live?country=${code}`, {
+      signal: planesAbortController.signal
+    });
+
+    // ---- 4. Ignore if a newer request came in ----
+    if (myRequestId !== planesRequestId) {
+      return; // stale response, ignore
+    }
+
     let planes = await res.json();
 
     if (!res.ok) {
       if (!silent) showToast(planes.error || 'Failed to load planes', 'warning');
+      showPlanesLoading(false);
       return;
     }
 
-    const originalCount = Array.isArray(planes) ? planes.length : 0;
-
-    // ---- Filter planes to the selected country's bounding box ----
+    // ---- 5. Filter to country bounding box ----
     const bounds = (typeof COUNTRY_BOUNDS !== 'undefined') ? COUNTRY_BOUNDS[code] : null;
     if (bounds && Array.isArray(planes)) {
       const [lamin, lamax, lomin, lomax] = bounds;
@@ -105,38 +153,56 @@ async function loadPlanes(code, silent = false) {
         return lat >= lamin && lat <= lamax && lon >= lomin && lon <= lomax;
       });
     }
-    // ---------------------------------------------------------------
 
+    // ---- 6. Cap plane count for performance ----
     if (Array.isArray(planes) && planes.length > MAX_PLANES) {
       const flying = planes.filter(p => !p.on_ground);
       const grounded = planes.filter(p => p.on_ground);
       planes = [...flying.slice(0, MAX_PLANES), ...grounded.slice(0, 20)];
     }
 
-    drawPlanes(planes);
-    updateStatusUpdated();
+    // ---- 7. Cache + render ----
+    planesCache.set(code, { planes, timestamp: Date.now() });
 
-    // ---- Friendly message when no planes are over the selected country ----
-    if (planes.length === 0 && !silent) {
-      const countryName = (typeof allCountries !== 'undefined')
-        ? (allCountries.find(c => c.cca2 === code)?.name?.common || code)
-        : code;
-      showToast(`✈️ No aircraft currently over ${countryName}. Try a busier country like India, USA, or UAE.`, 'info');
-    }
-    // ----------------------------------------------------------------------
+    // Only render if this is still the current request
+    if (myRequestId === planesRequestId) {
+      drawPlanes(planes);
+      updateStatusUpdated();
+      showPlanesLoading(false);
 
-    if (!silent) {
-      console.log(`✈️ ${code}: showing ${planes.length} of ${originalCount} planes from API`);
+      if (planes.length === 0 && !silent) {
+        const countryName = (typeof allCountries !== 'undefined')
+          ? (allCountries.find(c => c.cca2 === code)?.name?.common || code)
+          : code;
+        showToast(`✈️ No aircraft currently over ${countryName}. Try a busier country like India, USA, or UAE.`, 'info');
+      }
+
+      if (!silent) {
+        console.log(`✈️ ${code}: ${planes.length} planes shown`);
+      }
     }
 
   } catch (err) {
+    // ---- 8. Ignore abort errors ----
+    if (err.name === 'AbortError') {
+      return; // user switched country — expected
+    }
     console.error('Planes fetch error:', err);
     if (!silent) showToast('Planes unavailable', 'warning');
+    showPlanesLoading(false);
   }
 }
 
+// ---- Loading state helper for the counter ----
+function showPlanesLoading(isLoading) {
+  const el = document.getElementById('planeCount');
+  const el2 = document.getElementById('statusPlanes');
 
-
+  if (isLoading) {
+    if (el) el.innerHTML = '<span class="loading-dots">...</span>';
+    if (el2) el2.innerHTML = '<span class="loading-dots">...</span>';
+  }
+}
 
 document.getElementById('countrySelect').addEventListener('change', async (e) => {
   const code = e.target.value;
@@ -153,7 +219,6 @@ document.getElementById('countrySelect').addEventListener('change', async (e) =>
     showToast(`Now viewing ${country.flag} ${country.name.common}`, 'info');
   }
 });
-
 
 const searchInput = document.getElementById('searchInput');
 const searchResults = document.getElementById('searchResults');
@@ -218,7 +283,6 @@ document.addEventListener('click', (e) => {
   }
 });
 
-
 document.getElementById('locateBtn').addEventListener('click', () => {
   if (!navigator.geolocation) {
     showToast('Geolocation not supported', 'error');
@@ -258,7 +322,6 @@ document.getElementById('locateBtn').addEventListener('click', () => {
   );
 });
 
-
 document.getElementById('infoBtn').addEventListener('click', () => {
   const panel = document.getElementById('infoPanel');
   if (panel.classList.contains('open')) {
@@ -271,19 +334,16 @@ document.getElementById('infoBtn').addEventListener('click', () => {
   }
 });
 
-
 document.getElementById('closeInfo').addEventListener('click', () => {
   closeInfoPanel();
   document.getElementById('infoBtn').classList.remove('active');
 });
-
 
 document.getElementById('logoutBtn').addEventListener('click', () => {
   if (!confirm('Log out?')) return;
   localStorage.removeItem('user');
   window.location.href = 'index.html';
 });
-
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -295,6 +355,5 @@ function escapeHtml(str) {
 function escapeAttr(str) {
   return escapeHtml(str).replace(/"/g, '&quot;');
 }
-
 
 initApp();
