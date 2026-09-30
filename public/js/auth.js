@@ -1,7 +1,4 @@
 
-
-
-
 const API = '/api';
 
 
