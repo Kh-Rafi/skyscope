@@ -33,88 +33,6 @@ const authLimiter = rateLimit({
     message: { error: 'Too many authentication attempts. Please try again later.' }
 });
 
-/* ------------------------------------------------------------------
-   ICAO24 hex prefix → Country of registration.
-   Based on ICAO Annex 10, Volume III, Chapter 9 (2024 allocation).
-   https://en.wikipedia.org/wiki/Aviation_transponder_interrogation_codes
-   ------------------------------------------------------------------ */
-const ICAO_COUNTRY_PREFIXES = {
-    // ---------- North America ----------
-    A0: 'United States', A1: 'United States', A2: 'United States', A3: 'United States',
-    A4: 'United States', A5: 'United States', A6: 'United States', A7: 'United States',
-    A8: 'United States', A9: 'United States', AA: 'United States', AB: 'United States',
-    AC: 'United States', AD: 'United States', AE: 'United States', AF: 'United States',
-    C0: 'Canada', C1: 'Canada', C2: 'Canada', C3: 'Canada',
-    C4: 'Canada', C5: 'Canada', C6: 'Canada', C7: 'Canada',
-    C8: 'Canada', C9: 'Canada', CA: 'Canada', CB: 'Canada',
-    CC: 'Canada', CD: 'Canada', CE: 'Canada', CF: 'Canada',
-    '0D': 'Mexico',
-
-    // ---------- South America ----------
-    E0: 'Argentina', E1: 'Argentina', E2: 'Argentina', E3: 'Argentina',
-    E4: 'Brazil', E5: 'Brazil', E6: 'Brazil', E7: 'Brazil',
-
-    // ---------- Europe ----------
-    '30': 'Italy', '31': 'Italy', '32': 'Italy', '33': 'Italy',
-    '34': 'Spain', '35': 'Spain', '36': 'Spain', '37': 'Spain',
-    '38': 'France', '39': 'France', '3A': 'France', '3B': 'France',
-    '3C': 'Germany', '3D': 'Germany', '3E': 'Germany', '3F': 'Germany',
-    '40': 'United Kingdom', '41': 'United Kingdom', '42': 'United Kingdom',
-    '43': 'United Kingdom', '44': 'United Kingdom',
-    '45': 'Denmark', '46': 'Denmark',
-    '48': 'Netherlands', '49': 'Netherlands', '4A': 'Netherlands',
-    '4B': 'Switzerland', '4C': 'Switzerland', '4D': 'Switzerland',
-    '50': 'Ireland', '51': 'Ireland',
-    '58': 'Austria', '59': 'Austria',
-    '68': 'Sweden', '69': 'Sweden', '6A': 'Sweden',
-    '6B': 'Norway', '6C': 'Norway', '6D': 'Norway',
-    '70': 'Pakistan',   // ← corrected (was Bangladesh/South Asia)
-    '71': 'Bangladesh', // ← corrected
-    '72': 'Bangladesh', // ← corrected
-    '73': 'Bangladesh', // ← corrected
-    '74': 'India', '75': 'India', '76': 'India', '77': 'India',
-    '78': 'Portugal', '79': 'Portugal',
-    '7B': 'Mongolia',
-    '80': 'South Korea', '81': 'South Korea', '82': 'South Korea',
-    '83': 'South Korea', '84': 'South Korea', '85': 'South Korea',
-    '86': 'Japan', '87': 'Japan',
-    '88': 'South Korea', '89': 'South Korea',  // ← KEEP as Korea (ICAO)
-    '8A': 'Japan', '8B': 'Japan', '8C': 'Japan', '8D': 'Japan',
-    '8E': 'Japan', '8F': 'Japan',
-
-    // ---------- China / East Asia ----------
-    '7A': 'China', '7C': 'China', '7D': 'China', '7E': 'China', '7F': 'China',
-
-    // ---------- Russia / CIS ----------
-    '10': 'Russia', '11': 'Russia', '12': 'Russia', '13': 'Russia',
-    '14': 'Russia', '15': 'Russia', '16': 'Russia', '17': 'Russia',
-    '18': 'Russia', '19': 'Russia',
-
-    // ---------- Oceania ----------
-    '7C': 'Australia', '7D': 'Australia', // (later duplicate overwrites China)
-
-    // ---------- Africa ----------
-    '00': 'South Africa', '01': 'South Africa', '02': 'South Africa',
-    '03': 'South Africa', '04': 'South Africa', '05': 'South Africa',
-    '06': 'South Africa', '07': 'South Africa',
-    '08': 'Egypt', '09': 'Egypt', '0A': 'Egypt', '0B': 'Egypt',
-    '0C': 'Egypt',
-
-    // ---------- Misc ----------
-    '20': 'Cuba', '21': 'Cuba', '22': 'Cuba', '23': 'Cuba',
-    '24': 'Cuba', '25': 'Cuba', '26': 'Cuba', '27': 'Cuba',
-    '28': 'Czech Republic', '29': 'Czech Republic',
-    '2A': 'Czech Republic', '2B': 'Czech Republic',
-    '2C': 'Czech Republic', '2D': 'Czech Republic',
-    '2E': 'Czech Republic', '2F': 'Czech Republic',
-};
-
-function countryFromHex(hex) {
-    if (!hex || hex.length < 2) return 'Unknown';
-    const prefix = hex.substring(0, 2).toUpperCase();
-    return ICAO_COUNTRY_PREFIXES[prefix] || 'Unknown';
-}
-
 const countriesPath = path.join(__dirname, 'data', 'countries.json');
 let countriesData = [];
 
@@ -353,17 +271,12 @@ app.get('/api/planes/live', async (req, res) => {
     const country = String(req.query.country || 'BD').toUpperCase();
     let bounds = countryBounds[country];
 
-    // ---- FIXED fallback: build a MUCH larger bounding box ----
     if (!bounds) {
         const countryObj = countriesData.find(c => c.cca2 === country || c.cca3 === country);
         if (countryObj && countryObj.latlng && countryObj.latlng.length === 2) {
             const [lat, lng] = countryObj.latlng;
             const area = countryObj.area || 100000;
-            // Larger minimum, capped at reasonable max so huge countries still work
-            const sizeDeg = Math.min(
-                15,
-                Math.max(2.5, Math.sqrt(area) / 60)  // was /100, min 1.5 → now /60, min 2.5
-            );
+            const sizeDeg = Math.max(1.5, Math.sqrt(area) / 100);
             bounds = [lat - sizeDeg, lat + sizeDeg, lng - sizeDeg, lng + sizeDeg];
         } else {
             bounds = [-60, 75, -180, 180];
@@ -382,9 +295,7 @@ app.get('/api/planes/live', async (req, res) => {
     const centerLat = (lamin + lamax) / 2;
     const centerLon = (lomin + lomax) / 2;
     // Convert degrees to nautical miles (1 degree ≈ 60 NM)
-    // ---- FIXED: raised caps (min 150 NM, max 1000 NM) ----
-    const latSpan = lamax - lamin;
-    const radiusNM = Math.min(1000, Math.max(150, latSpan * 60));
+    const radiusNM = Math.min(250, Math.max(100, (lamax - lamin) * 60));
 
     const url = `https://api.adsb.lol/v2/lat/${centerLat}/lon/${centerLon}/dist/${radiusNM}`;
 
@@ -420,7 +331,7 @@ app.get('/api/planes/live', async (req, res) => {
             .map(a => ({
                 icao24: a.hex || 'unknown',
                 callsign: (a.flight || '').trim() || a.r || 'Unknown',
-                origin_country: countryFromHex(a.hex),
+                origin_country: 'Unknown', // adsb.lol doesn't provide this
                 longitude: a.lon,
                 latitude: a.lat,
                 altitude: a.alt_baro ? Math.round(a.alt_baro) : 0,
@@ -576,8 +487,12 @@ function startSelfPing() {
         return;
     }
 
+    // Use the ultra-light /api/ping endpoint (no DB query)
     const pingUrl = `${baseUrl.replace(/\/$/, '')}/api/ping`;
+
+    // 5 minutes: comfortably under Render's 15-minute idle threshold.
     const INTERVAL_MS = 5 * 60 * 1000;
+
     let consecutiveFailures = 0;
 
     const ping = () => {
@@ -586,14 +501,19 @@ function startSelfPing() {
             { timeout: 8000 },
             (res) => {
                 res.resume();
+
                 if (res.statusCode >= 200 && res.statusCode < 300) {
                     if (consecutiveFailures > 0) {
-                        console.log(`[keep-alive] recovered after ${consecutiveFailures} failure(s)`);
+                        console.log(
+                            `[keep-alive] recovered after ${consecutiveFailures} failure(s)`
+                        );
                         consecutiveFailures = 0;
                     }
                 } else {
                     consecutiveFailures++;
-                    console.warn(`[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`);
+                    console.warn(
+                        `[keep-alive] ping returned HTTP ${res.statusCode} (${consecutiveFailures} in a row)`
+                    );
                 }
             }
         );
@@ -606,7 +526,9 @@ function startSelfPing() {
 
         req.on('error', (err) => {
             consecutiveFailures++;
-            console.warn(`[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`);
+            console.warn(
+                `[keep-alive] ping error: ${err.message} (${consecutiveFailures} in a row)`
+            );
         });
     };
 
