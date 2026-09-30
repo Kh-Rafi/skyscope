@@ -71,54 +71,60 @@ function drawAirports(airports) {
 function drawPlanes(planes) {
   if (!planeLayer) return;
 
-  // Ensure planes is always a valid array
   if (!Array.isArray(planes)) planes = [];
 
   planeLayer.clearLayers();
   planeMarkers = [];
 
-  // ---- Update counter FIRST so it can never be out of sync ----
+  // Update counter first so it's never out of sync
   updateStatusPlanes(planes.length);
 
   planes.forEach(p => {
     try {
-      const color = p.on_ground ? '#43a047' : '#e53935';
       const heading = Number(p.heading) || 0;
       const altitude = Number(p.altitude) || 0;
       const velocity = Number(p.velocity) || 0;
       const lat = Number(p.latitude);
       const lon = Number(p.longitude);
 
-      // Skip if coordinates are invalid
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      // ---- Different visual for grounded vs flying planes ----
+      const isGrounded = p.on_ground === true;
+      const color = isGrounded ? '#43a047' : '#e53935';
+      const iconEmoji = isGrounded ? '🛬' : '✈️';
+      const fontSize = isGrounded ? '22px' : '18px';
+      const glow = isGrounded
+        ? `0 0 3px white, 0 0 6px ${color}, 0 0 10px ${color}`
+        : `0 0 3px white`;
 
       const icon = L.divIcon({
         className: 'plane-icon',
         html: `
           <div style="
             transform: rotate(${heading}deg);
-            font-size: 18px;
+            font-size: ${fontSize};
             color: ${color};
-            text-shadow: 0 0 3px white;
+            text-shadow: ${glow};
             line-height: 1;
             transition: transform 0.5s ease;
-          ">✈️</div>
+          ">${iconEmoji}</div>
         `,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9]
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
       });
 
       const marker = L.marker([lat, lon], { icon });
 
-      const status = p.on_ground ? '🟢 On Ground' : '🔴 In Flight';
+      const status = isGrounded ? '🟢 On Ground' : '🔴 In Flight';
       const callsign = p.callsign || 'Unknown';
       const country = p.origin_country || 'Unknown';
 
       marker.bindPopup(`
         <div style="font-size: 13px; line-height: 1.6;">
-          <b>✈️ ${callsign}</b><br>
+          <b>${iconEmoji} ${callsign}</b><br>
           <b>Status:</b> ${status}<br>
-          <b>Country:</b> ${country}<br>
+          <b>Registered in:</b> ${country}<br>
           <b>Altitude:</b> ${altitude.toLocaleString()} m<br>
           <b>Speed:</b> ${velocity} km/h<br>
           <b>Heading:</b> ${heading}°
@@ -242,7 +248,7 @@ function addMapLegend() {
           <span>Flying plane</span>
         </div>
         <div class="legend-row">
-          <span class="legend-plane" style="color:#43a047;">✈️</span>
+          <span class="legend-plane" style="color:#43a047;">🛬</span>
           <span>On-ground plane</span>
         </div>
       </div>
