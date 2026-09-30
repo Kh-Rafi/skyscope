@@ -1,8 +1,10 @@
 .app-body {
   height: 100vh;
+  height: 100dvh;                  /* modern: accounts for mobile browser chrome */
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: -webkit-fill-available; /* iOS Safari fallback */
 }
 
 
@@ -173,6 +175,7 @@
   flex: 1;
   position: relative;
   overflow: hidden;
+  min-height: 0; /* critical: lets flexbox shrink this, not push status bar off screen */
 }
 
 #map {
@@ -365,6 +368,9 @@
 }
 
 
+/* ==================================================================
+   STATUS BAR — always visible, even on mobile
+   ================================================================== */
 .status-bar {
   background: var(--ink);
   color: var(--off-white);
@@ -375,18 +381,31 @@
   font-size: 13px;
   flex-shrink: 0;
   z-index: 100;
+  position: relative;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .status-stats {
   display: flex;
   gap: 20px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.status-stats::-webkit-scrollbar {
+  display: none;
 }
 
 .status-stat {
   display: flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .status-stat b {
@@ -397,6 +416,8 @@
 .status-updated {
   color: rgba(250, 247, 242, 0.6);
   font-size: 12px;
+  flex-shrink: 0;
+  margin-left: 12px;
 }
 
 
@@ -431,7 +452,7 @@
 }
 
 
-/* ---- Loading dots animation (used while planes are being fetched) ---- */
+/* ---- Loading dots animation ---- */
 .loading-dots {
   display: inline-block;
   animation: pulse-dots 1.2s ease-in-out infinite;
@@ -489,6 +510,10 @@
 }
 
 
+/* ==================================================================
+   MEDIA QUERIES
+   ================================================================== */
+
 @media (max-width: 900px) {
   .app-navbar {
     flex-wrap: wrap;
@@ -528,13 +553,17 @@
     transform: translateY(0);
   }
 
+  /* Status bar — compact but always visible */
   .status-bar {
-    font-size: 12px;
-    padding: 8px 14px;
+    font-size: 11px;
+    padding: 6px 10px;
+    gap: 6px;
+    min-height: 30px;
+    max-height: 42px;
   }
 
   .status-stats {
-    gap: 12px;
+    gap: 8px;
   }
 }
 
@@ -563,8 +592,21 @@
     grid-template-columns: 1fr;
   }
 
+  /* Status bar even smaller — timestamp stays visible */
+  .status-bar {
+    font-size: 10px;
+    padding: 5px 8px;
+    min-height: 26px;
+    max-height: 36px;
+  }
+
+  .status-stats {
+    gap: 6px;
+  }
+
   .status-updated {
-    display: none;
+    font-size: 10px;
+    color: rgba(250, 247, 242, 0.7);
   }
 }
 
@@ -678,11 +720,10 @@
 
 
 /* ==================================================================
-   ROUTE DIRECTIONS UI (NEW)
+   ROUTE DIRECTIONS UI
    Bottom sheet on mobile, side panel on desktop.
    ================================================================== */
 
-/* ---- Small tweak so Leaflet popup content wraps nicely with the button ---- */
 .leaflet-popup-content {
   margin: 12px 14px;
 }
@@ -696,7 +737,6 @@
   transform: scale(0.98);
 }
 
-/* ---- Backdrop: dims the map behind the sheet on mobile ---- */
 .route-backdrop {
   position: fixed;
   inset: 0;
@@ -714,7 +754,6 @@
   pointer-events: auto;
 }
 
-/* ---- The route sheet itself (default = desktop side panel) ---- */
 .route-sheet {
   position: fixed;
   top: 50%;
@@ -738,7 +777,6 @@
   transform: translate(0, -50%);
 }
 
-/* ---- Header ---- */
 .route-sheet-header {
   position: relative;
   padding: 20px 20px 16px;
@@ -749,7 +787,7 @@
 }
 
 .route-sheet-handle {
-  display: none; /* only shown on mobile */
+  display: none;
   width: 44px;
   height: 4px;
   background: rgba(255, 255, 255, 0.35);
@@ -795,14 +833,12 @@
   font-weight: 500;
 }
 
-/* ---- Body ---- */
 .route-sheet-body {
   padding: 20px;
   overflow-y: auto;
   flex: 1;
 }
 
-/* ---- Loading state ---- */
 .route-loading {
   display: flex;
   align-items: center;
@@ -823,7 +859,6 @@
   flex-shrink: 0;
 }
 
-/* ---- Ready state: distance / ETA stats ---- */
 .route-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -861,7 +896,6 @@
   font-weight: 600;
 }
 
-/* ---- Error state ---- */
 .route-error {
   display: flex;
   align-items: flex-start;
@@ -882,7 +916,6 @@
   line-height: 1.2;
 }
 
-/* ---- Actions row ---- */
 .route-sheet-actions {
   padding: 14px 20px 18px;
   display: flex;
@@ -929,9 +962,6 @@
   border-color: var(--peach);
 }
 
-/* ==================================================================
-   MOBILE: transform the side panel into a bottom sheet
-   ================================================================== */
 @media (max-width: 700px) {
   .route-sheet {
     top: auto;
@@ -963,7 +993,6 @@
   }
 }
 
-/* Very small screens */
 @media (max-width: 380px) {
   .route-stat-value {
     font-size: 18px;
