@@ -2,4 +2,32 @@ User-agent: *
 Allow: /
 Disallow: /app.html
 
+# --- Social media crawlers (allow everything for link previews) ---
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: LinkedInBot
+Allow: /
+
+User-agent: WhatsApp
+Allow: /
+
+User-agent: TelegramBot
+Allow: /
+
+User-agent: Discordbot
+Allow: /
+
+User-agent: Slackbot
+Allow: /
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
 Sitemap: https://skyscope-dgzc.onrender.com/sitemap.xml
